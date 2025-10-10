@@ -108,22 +108,13 @@ export const useWebRTCStore = defineStore('webrtc', () => {
       noiseSuppression: true   // 开启噪声抑制（减少背景噪音）
     }
   })
-  
-  // AI分析结果历史记录
-  // id: 唯一标识符（时间戳）
-  // id: 唯一标识符（时间戳）
-  // timestamp: 分析时间戳
-  // localTime: 本地时间字符串
-  // faces: 人脸检测结果数组
-  // objects: 物体检测结果数组
-  // confidence: 整体置信度
-  // processingTime: 处理耗时（毫秒）
-  const analysisResults = ref([])
-  const hasAnalysisResults = computed(() => analysisResults.value.length > 0)
-  const analysisCount = computed(() => analysisResults.value.length)
-  
-  // 最新的分析结果
-  const latestAnalysis = ref(null)
+
+  // 手语翻译结果（轻量方案）
+  const signLanguageResults = ref([])
+  const latestSignLanguage = computed(() => {
+    const arr = signLanguageResults.value
+    return arr.length ? arr[arr.length - 1] : null
+  })
 
   // AI分析配置参数
   const analysisSettings = ref({
@@ -136,41 +127,6 @@ export const useWebRTCStore = defineStore('webrtc', () => {
   })
   const maxResults = computed(() => analysisSettings.value.maxResults || 200)
 
-  // 系统运行统计数据
-  const statistics = ref({
-    totalFrames: 0, // 总处理帧数
-    analyzedFrames: 0, // 已分析帧数
-    detectedFaces: 0,
-    detectedObjects: 0,
-    averageProcessingTime: 0,  // 平均处理时间（毫秒）
-    video: {
-      codec: '',
-      resolution: '',
-      frameRate: 0,
-      bitrate: 0
-    },
-    audio: {
-      codec: '',
-      bitrate: 0,
-      sampleRate: 0
-    },
-    connection: {
-      latency: 0,
-      packetLoss: 0,
-      jitter: 0
-    }
-  })
-
-  const latestFaceCount = computed(() => {
-    if (!latestAnalysis.value?.faces) return 0
-    return latestAnalysis.value.faces.length
-  })
-  const latestObjectCount = computed(() => {
-    if (!latestAnalysis.value?.objects) return 0
-    return latestAnalysis.value.objects.length
-  })
-  
-  
   /**
    * 错误信息集合
    * @type {Ref<Array>}
@@ -333,9 +289,12 @@ export const useWebRTCStore = defineStore('webrtc', () => {
             console.error('处理ICE候选失败:', error)
           }
         })
-        socket.value.on('analysis_result', (result) => {
-          console.log('📊 收到AI分析结果')
-          addAnalysisResult(result)
+        // 已去除通用AI分析结果通道，前端不再记录物体/人脸等统计
+        // 如需恢复，可重新监听 'analysis_result' 并调用对应处理
+        // 手语翻译结果（占位）
+        socket.value.on('sign_language_translation', (result) => {
+          console.log('🤟 收到手语翻译结果', result)
+          addSignLanguageResult(result)
         })
         socket.value.on('system_message', (message) => {
           console.log('📢 系统消息:', message)
@@ -413,60 +372,34 @@ export const useWebRTCStore = defineStore('webrtc', () => {
     }
   }
   
-
-  
   /**
-   * 添加AI分析结果
-   * @function addAnalysisResult
-   * @param {Object} result - AI分析结果对象
-   * @description 将新的AI分析结果添加到结果历史中
-   * 
-   * 参数说明：
-   * @param {Object} result.faces - 人脸检测结果数组
-   * @param {Object} result.objects - 物体检测结果数组
-   * @param {number} result.confidence - 整体置信度
-   * @param {number} result.processingTime - 处理耗时（毫秒）
-   * 
-   * 功能说明：
-   * - 为结果添加唯一ID和时间戳
-   * - 将结果插入到历史记录的开头（最新的在前）
-   * - 更新最新分析结果的缓存
-   * - 自动清理超出限制的旧结果
-   * - 维护结果数量在配置的最大值内
+   * 添加手语翻译结果
+   * @function addSignLanguageResult
+   * @param {Object} result - { text, confidence, source, timestamp }
    */
-  const addAnalysisResult = (result) => {
-    const analysisResult = {
-      id: Date.now(),                              // 唯一标识符
-      timestamp: Date.now(),                       // 时间戳（毫秒）
-      localTime: new Date().toLocaleString(),      // 本地时间字符串
-      ...result                                    // 展开传入的分析结果
+  const addSignLanguageResult = (result) => {
+    signLanguageResults.value.push({
+      ...result,
+      id: Date.now(),
+      localTime: new Date().toLocaleString()
+    })
+    if (signLanguageResults.value.length > maxResults.value) {
+      signLanguageResults.value.shift()
     }
-    
-    // 将新结果添加到数组开头
-    analysisResults.value.unshift(analysisResult)
-    // 更新最新结果缓存
-    latestAnalysis.value = analysisResult
-    
-    // 限制结果数量，防止内存溢出
-    if (analysisResults.value.length > maxResults.value) {
-      analysisResults.value = analysisResults.value.slice(0, maxResults.value)
-    }
+  }
+
+  /**
+   * 清空手语翻译结果
+   */
+  const clearSignLanguageResults = () => {
+    signLanguageResults.value = []
   }
   
   /**
-   * 清空所有分析结果
-   * @function clearAnalysisResults
-   * @description 清除所有AI分析历史记录和最新结果缓存
-   * 
-   * 用途：
-   * - 重置分析数据
-   * - 释放内存空间
-   * - 开始新的分析会话
-   * - 用户手动清理数据
+   * 清空错误信息
    */
-  const clearAnalysisResults = () => {
-    analysisResults.value = []
-    latestAnalysis.value = null
+  const clearErrors = () => {
+    errors.value = []
   }
   
   /**
@@ -491,29 +424,6 @@ export const useWebRTCStore = defineStore('webrtc', () => {
    */
   const updateAnalysisSettings = (settings) => {
     Object.assign(analysisSettings.value, settings)
-  }
-  
-  /**
-   * 更新系统统计信息
-   * @function updateStatistics
-   * @param {Object} stats - 新的统计数据对象
-   * @description 更新系统运行过程中的各种统计指标
-   * 
-   * 可更新的统计项：
-   * @param {number} stats.totalFrames - 总处理帧数
-   * @param {number} stats.analyzedFrames - 已分析帧数
-   * @param {number} stats.detectedFaces - 检测到的人脸总数
-   * @param {number} stats.detectedObjects - 检测到的物体总数
-   * @param {number} stats.averageProcessingTime - 平均处理时间（毫秒）
-   * 
-   * 用途：
-   * - 监控系统性能
-   * - 跟踪分析效果
-   * - 提供用户反馈
-   * - 性能优化参考
-   */
-  const updateStatistics = (stats) => {
-    Object.assign(statistics.value, stats)
   }
   
   // ==================== WebRTC信令处理函数 ====================
@@ -981,8 +891,6 @@ export const useWebRTCStore = defineStore('webrtc', () => {
           }
         })
 
-        // 更新统计信息
-        Object.assign(statistics.value, newStats)
         
       } catch (error) {
         console.error('❌ 收集统计信息失败:', error)
@@ -1045,36 +953,6 @@ export const useWebRTCStore = defineStore('webrtc', () => {
       // 重置状态
       isStreamingState.value = false
       connectionState.value = 'disconnected'
-      
-      // 清理分析结果
-      analysisResults.value = []
-      latestAnalysis.value = null
-      
-      // 重置统计信息
-      Object.assign(statistics.value, {
-        totalFrames: 0,
-        analyzedFrames: 0,
-        detectedFaces: 0,
-        detectedObjects: 0,
-        averageProcessingTime: 0,
-        video: {
-          codec: '',
-          resolution: '',
-          frameRate: 0,
-          bitrate: 0
-        },
-        audio: {
-          codec: '',
-          bitrate: 0,
-          sampleRate: 0
-        },
-        connection: {
-          latency: 0,
-          packetLoss: 0,
-          jitter: 0
-        }
-      })
-
       console.log('✅ 视频通话已停止')
 
     } catch (error) {
@@ -1124,14 +1002,13 @@ export const useWebRTCStore = defineStore('webrtc', () => {
     availableDevices,
     selectedDevices,
     streamSettings,
-    analysisResults,
-    latestAnalysis,
     analysisSettings,
-    statistics,
     errors,
     isStreamingState,
     isAnalysisEnabled,
     isFrameFilterEnabled,
+    signLanguageResults,
+    latestSignLanguage,
     roomId,
     clientCount,
     isRoomReady,
@@ -1142,10 +1019,6 @@ export const useWebRTCStore = defineStore('webrtc', () => {
     hasRemoteStream,
     isCallActive,
     deviceCount,
-    hasAnalysisResults,
-    latestFaceCount,
-    latestObjectCount,
-    analysisCount,
     maxResults,
     
     
@@ -1156,10 +1029,9 @@ export const useWebRTCStore = defineStore('webrtc', () => {
     setLocalStream,
     setRemoteStream,
     updateDevices,
-    addAnalysisResult,
-    clearAnalysisResults,
+    clearSignLanguageResults,
+    clearErrors,
     updateAnalysisSettings,
-    updateStatistics,
     cleanup,
     
     handleWebRTCOffer,

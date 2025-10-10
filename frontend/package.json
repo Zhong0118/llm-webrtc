@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.1.0",
+    "@mediapipe/hands": "^0.4.1675469240",
     "@tailwindcss/vite": "^4.1.13",
     "@vueuse/core": "^10.3.0",
     "element-plus": "^2.11.3",

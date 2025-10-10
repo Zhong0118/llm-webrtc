@@ -5,15 +5,13 @@
         <div class="card-header">
           <span>
             <el-icon><DataAnalysis /></el-icon>
-            AI分析结果
+            手语翻译（轻量）
           </span>
           <div class="header-actions">
-            <el-badge :value="analysisCount" class="item">
-              <el-button size="small" @click="clearResults">
-                <el-icon><Delete /></el-icon>
-                清空
-              </el-button>
-            </el-badge>
+            <el-button size="small" @click="clearSL">
+              <el-icon><Delete /></el-icon>
+              清空
+            </el-button>
             <el-button 
               size="small" 
               :type="autoScroll ? 'primary' : 'default'"
@@ -25,134 +23,38 @@
           </div>
         </div>
       </template>
-
-      <!-- 最新结果概览 -->
-      <div v-if="latestAnalysis" class="latest-result">
-        <el-alert
-          :title="`最新检测: ${latestAnalysis.localTime}`"
-          type="success"
-          :closable="false"
-        >
-          <template #default>
-            <div class="latest-content">
-              <div v-if="latestAnalysis.faces && latestAnalysis.faces.length > 0">
-                <strong>人脸检测:</strong> 发现 {{ latestAnalysis.faces.length }} 张人脸
-              </div>
-              <div v-if="latestAnalysis.objects && latestAnalysis.objects.length > 0">
-                <strong>物体检测:</strong> {{ latestAnalysis.objects.map(obj => obj.label).join(', ') }}
-              </div>
-              <div v-if="latestAnalysis.confidence">
-                <strong>置信度:</strong> {{ (latestAnalysis.confidence * 100).toFixed(1) }}%
-              </div>
-            </div>
-          </template>
-        </el-alert>
-      </div>
-
-      <!-- 统计信息 -->
-      <div class="statistics">
-        <el-row :gutter="20">
-          <el-col :span="6">
-            <el-statistic title="总检测次数" :value="analysisCount" />
-          </el-col>
-          <el-col :span="6">
-            <el-statistic title="人脸检测" :value="faceDetectionCount" />
-          </el-col>
-          <el-col :span="6">
-            <el-statistic title="物体检测" :value="objectDetectionCount" />
-          </el-col>
-          <el-col :span="6">
-            <el-statistic title="平均置信度" :value="averageConfidence" suffix="%" />
-          </el-col>
-        </el-row>
-      </div>
-
-      <!-- 结果列表 -->
+      <!-- 手语翻译结果列表 -->
       <div class="results-list" ref="resultsListRef">
         <el-timeline>
           <el-timeline-item
-            v-for="result in displayResults"
+            v-for="result in displaySL"
             :key="result.id"
             :timestamp="result.localTime"
             placement="top"
           >
             <el-card class="result-item">
               <div class="result-content">
-                <!-- 人脸检测结果 -->
-                <div v-if="result.faces && result.faces.length > 0" class="detection-section">
-                  <h4>
-                    <el-icon><User /></el-icon>
-                    人脸检测 ({{ result.faces.length }})
-                  </h4>
-                  <div class="faces-grid">
-                    <el-tag
-                      v-for="(face, index) in result.faces"
-                      :key="index"
-                      class="face-tag"
-                      :type="getFaceTagType(face.confidence)"
-                    >
-                      人脸 {{ index + 1 }} - {{ (face.confidence * 100).toFixed(1) }}%
-                    </el-tag>
-                  </div>
-                </div>
-
-                <!-- 物体检测结果 -->
-                <div v-if="result.objects && result.objects.length > 0" class="detection-section">
-                  <h4>
-                    <el-icon><Box /></el-icon>
-                    物体检测 ({{ result.objects.length }})
-                  </h4>
-                  <div class="objects-grid">
-                    <el-tag
-                      v-for="(obj, index) in result.objects"
-                      :key="index"
-                      class="object-tag"
-                      :type="getObjectTagType(obj.confidence)"
-                    >
-                      {{ obj.label }} - {{ (obj.confidence * 100).toFixed(1) }}%
-                    </el-tag>
-                  </div>
-                </div>
-
-                <!-- 其他分析结果 -->
-                <div v-if="result.emotions && result.emotions.length > 0" class="detection-section">
+                <!-- 手语翻译文本 -->
+                <div class="detection-section">
                   <h4>
                     <el-icon><Sunny /></el-icon>
-                    情感分析
+                    翻译
                   </h4>
                   <div class="emotions-grid">
-                    <el-tag
-                      v-for="(emotion, index) in result.emotions"
-                      :key="index"
-                      class="emotion-tag"
-                      type="warning"
-                    >
-                      {{ emotion.emotion }} - {{ (emotion.confidence * 100).toFixed(1) }}%
+                    <el-tag :type="(result.confidence||0) > 0.6 ? 'success' : 'info'">
+                      {{ result.text }}
                     </el-tag>
+                    <el-text size="small" type="info" style="margin-left:10px;">
+                      置信度: {{ ((result.confidence||0) * 100).toFixed(0) }}%
+                    </el-text>
                   </div>
-                </div>
-
-                <!-- 处理时间 -->
-                <div class="processing-info">
-                  <el-text size="small" type="info">
-                    <el-icon><Timer /></el-icon>
-                    处理时间: {{ result.processingTime || 'N/A' }}ms
-                  </el-text>
                 </div>
               </div>
             </el-card>
           </el-timeline-item>
         </el-timeline>
-
-        <!-- 加载更多 -->
-        <div v-if="hasMoreResults" class="load-more">
-          <el-button @click="loadMoreResults" :loading="loading">
-            加载更多
-          </el-button>
-        </div>
-
         <!-- 空状态 -->
-        <el-empty v-if="analysisCount === 0" description="暂无分析结果" />
+        <el-empty v-if="slCount === 0" description="暂无手语翻译结果" />
       </div>
     </el-card>
   </div>
@@ -161,14 +63,12 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
 import { useWebRTCStore } from '@/stores/webrtc'
+import { storeToRefs } from 'pinia'
 import {
   DataAnalysis,
   Delete,
   Sort,
-  User,
-  Box,
-  Sunny,
-  Timer
+  Sunny
 } from '@element-plus/icons-vue'
 
 const store = useWebRTCStore()
@@ -178,43 +78,35 @@ const loading = ref(false)
 const pageSize = 20
 const currentPage = ref(1)
 
-// 从store获取数据
-const { analysisResults, latestAnalysis, analysisCount } = store
+// 从store获取手语翻译数据（保持响应性）
+const { signLanguageResults, latestSignLanguage } = storeToRefs(store)
+
+// 时间格式化，保证 timestamp 为字符串避免 UI 内部调用 toString 出错
+const formatTimestamp = (ts) => {
+  if (!ts) return ''
+  try {
+    const d = typeof ts === 'number' || typeof ts === 'string' ? new Date(ts) : ts
+    return d.toLocaleString()
+  } catch {
+    return ''
+  }
+}
 
 // 计算属性
-const displayResults = computed(() => {
+const displaySL = computed(() => {
   const endIndex = currentPage.value * pageSize
-  return analysisResults.slice(0, endIndex)
+  return (signLanguageResults.value || [])
+    .slice(0, endIndex)
+    .map(r => ({
+      ...r,
+      localTime: r.localTime || formatTimestamp(r.timestamp)
+    }))
 })
 
-const hasMoreResults = computed(() => {
-  return analysisResults.length > displayResults.value.length
-})
-
-const faceDetectionCount = computed(() => {
-  return analysisResults.filter(result => 
-    result.faces && result.faces.length > 0
-  ).length
-})
-
-const objectDetectionCount = computed(() => {
-  return analysisResults.filter(result => 
-    result.objects && result.objects.length > 0
-  ).length
-})
-
-const averageConfidence = computed(() => {
-  if (analysisResults.length === 0) return 0
-  
-  const totalConfidence = analysisResults.reduce((sum, result) => {
-    return sum + (result.confidence || 0)
-  }, 0)
-  
-  return (totalConfidence / analysisResults.length * 100).toFixed(1)
-})
+const slCount = computed(() => (signLanguageResults.value || []).length)
 
 // 监听新结果，自动滚动
-watch(latestAnalysis, () => {
+watch(latestSignLanguage, () => {
   if (autoScroll.value) {
     nextTick(() => {
       scrollToBottom()
@@ -223,8 +115,8 @@ watch(latestAnalysis, () => {
 })
 
 // 方法
-const clearResults = () => {
-  store.clearAnalysisResults()
+const clearSL = () => {
+  store.clearSignLanguageResults()
   currentPage.value = 1
 }
 
@@ -244,18 +136,6 @@ const scrollToBottom = () => {
   if (resultsListRef.value) {
     resultsListRef.value.scrollTop = resultsListRef.value.scrollHeight
   }
-}
-
-const getFaceTagType = (confidence) => {
-  if (confidence > 0.8) return 'success'
-  if (confidence > 0.6) return 'warning'
-  return 'danger'
-}
-
-const getObjectTagType = (confidence) => {
-  if (confidence > 0.8) return 'success'
-  if (confidence > 0.6) return 'warning'
-  return 'danger'
 }
 </script>
 
@@ -292,12 +172,6 @@ const getObjectTagType = (confidence) => {
   gap: 5px;
 }
 
-.statistics {
-  margin-bottom: 20px;
-  padding: 15px;
-  background: #f8f9fa;
-  border-radius: 6px;
-}
 
 .results-list {
   flex: 1;

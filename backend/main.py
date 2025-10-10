@@ -25,27 +25,6 @@ rooms = {}
 # 存储客户端信息：客户端SID -> 房间ID
 client_rooms = {}
 
-async def mock_ai_analysis_task():
-    """
-    一个独立的后台任务，在第一个用户连接后启动。
-    它会每隔2秒向所有已连接的客户端广播一条伪造的AI分析结果。
-    """
-    logging.info("模拟AI分析任务已启动...")
-    # 使用一个简单的标志来确保这个无限循环的任务只被启动一次
-    if hasattr(sio, 'task_started') and sio.task_started:
-        return
-    sio.task_started = True
-    while True:
-        await asyncio.sleep(2)
-        # 模拟数据
-        mock_result = {
-            "faces": [{"id": i, "confidence": round(random.uniform(0.7, 0.99), 2)} for i in range(random.randint(0, 3))],
-            "objects": [{"label": random.choice(["杯子", "键盘", "鼠标"]), "confidence": round(random.uniform(0.6, 0.95), 2)} for i in range(random.randint(0, 2))],
-            "confidence": round(random.uniform(0.8, 0.98), 2),
-            "processingTime": random.randint(50, 150)
-        }
-        await sio.emit('analysis_result', mock_result)
-        logging.info(f"已广播模拟AI结果")
 
 def get_or_create_room():
     # 寻找有空位的房间（少于2个客户端）
@@ -88,6 +67,128 @@ def get_room_peer(sid):
     room_clients = rooms[room_id]
     peers = [client for client in room_clients if client != sid]
     return peers[0] if peers else None
+
+# 轻量方案：接收前端关键点并返回占位翻译结果
+@sio.on('analysis_keypoints')
+async def handle_analysis_keypoints(sid, payload):
+    """
+    接收前端发送的手部关键点数据并返回占位的手语翻译结果。
+    期望payload格式示例：
+    {
+      "source": "local" | "remote",
+      "fps": 5,
+      "hands": [
+        {"landmarks": [[x,y,z,score], ...], "handedness": "Left|Right"},
+        ...
+      ],
+      "timestamp": 1234567890
+    }
+    """
+    try:
+        hands = (payload or {}).get('hands', [])
+        source = (payload or {}).get('source', 'local')
+
+        # 非常简化的占位逻辑：根据是否检测到手以及关键点数量，给出伪翻译
+        detected = len(hands) > 0
+        keypoint_count = sum(len(h.get('landmarks', [])) for h in hands)
+
+        if detected and keypoint_count >= 21:
+            text = '检测到手势，正在翻译…'
+            confidence = 0.75
+        elif detected:
+            text = '检测到手部，但关键点不足'
+            confidence = 0.55
+        else:
+            text = '未检测到明显手势'
+            confidence = 0.2
+
+        result = {
+            'source': source,
+            'text': text,
+            'confidence': confidence,
+            'timestamp': payload.get('timestamp') if isinstance(payload, dict) else None
+        }
+
+        # 仅回发给发送方（同一sid），避免跨房混淆
+        await sio.emit('sign_language_translation', result, room=sid)
+        logging.info(f"返回手语占位翻译给 {sid}: {result}")
+    except Exception as e:
+        logging.error(f"处理关键点分析失败: {e}")
+        await sio.emit('sign_language_translation', {
+            'source': 'unknown',
+            'text': '后端处理错误',
+            'confidence': 0.0
+        }, room=sid)
+
+# 新增：接收序列关键点并返回占位的序列翻译结果
+@sio.on('analysis_keypoints_sequence')
+async def handle_analysis_keypoints_sequence(sid, payload):
+    """
+    接收前端打包的关键点序列 frames 并进行占位翻译。
+    期望payload格式示例：
+    {
+      "source": "local",
+      "fps": 5,
+      "frames": [
+        {"hands": [...], "timestamp": 123},
+        ...
+      ],
+      "started_at": 123456,
+      "ended_at": 123789
+    }
+    """
+    try:
+      frames = (payload or {}).get('frames', [])
+      source = (payload or {}).get('source', 'local')
+      fps = (payload or {}).get('fps', 5)
+      started_at = (payload or {}).get('started_at')
+      ended_at = (payload or {}).get('ended_at')
+
+      length = len(frames)
+      duration_ms = (ended_at - started_at) if (started_at and ended_at) else 0
+      # 简单度量：总关键点数量与帧数
+      total_keypoints = 0
+      hand_frames = 0
+      for f in frames:
+        hands = (f or {}).get('hands', [])
+        if hands:
+          hand_frames += 1
+          total_keypoints += sum(len(h.get('landmarks', [])) for h in hands)
+
+      # 占位翻译策略：帧数≥10且有连续手帧，提升置信度
+      if hand_frames >= max(2, int(0.4 * length)) and length >= max(5, int(1.5 * fps)):
+        text = '检测到连续手势序列，正在翻译…'
+        confidence = 0.82
+      elif hand_frames > 0:
+        text = '检测到零散手势序列'
+        confidence = 0.6
+      else:
+        text = '序列中未检测到有效手势'
+        confidence = 0.25
+
+      result = {
+        'source': source,
+        'text': text,
+        'confidence': confidence,
+        'timestamp': ended_at or started_at or None,
+        'meta': {
+          'frames': length,
+          'duration_ms': duration_ms,
+          'fps': fps,
+          'hand_frames': hand_frames,
+          'total_keypoints': total_keypoints
+        }
+      }
+
+      await sio.emit('sign_language_translation', result, room=sid)
+      logging.info(f"返回序列占位翻译给 {sid}: {result}")
+    except Exception as e:
+      logging.error(f"处理关键点序列失败: {e}")
+      await sio.emit('sign_language_translation', {
+        'source': 'unknown',
+        'text': '后端序列处理错误',
+        'confidence': 0.0
+      }, room=sid)
 
 @sio.on('connect')
 async def connect(sid, environ):

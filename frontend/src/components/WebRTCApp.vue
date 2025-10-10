@@ -8,7 +8,7 @@
           <span class="title">WebRTC AI 视频分析</span>
         </div>
         <div class="header-actions">
-          <el-badge :value="store.analysisCount" class="item">
+          <el-badge :value="store.signLanguageResults.length" class="item">
             <el-button type="primary" @click="toggleAnalysisPanel">
               <el-icon><DataAnalysis /></el-icon>
               分析结果
@@ -77,54 +77,7 @@
           />
         </el-form-item>
 
-        <!-- AI分析设置 -->
-        <el-divider content-position="left">AI 分析设置</el-divider>
-
-        <el-form-item label="分析间隔">
-          <el-input-number
-            v-model="settings.analysisInterval"
-            :min="1"
-            :max="10"
-            :step="0.5"
-            controls-position="right"
-          />
-          <span style="margin-left: 10px;">秒</span>
-        </el-form-item>
-
-        <el-form-item label="人脸检测">
-          <el-switch
-            v-model="settings.faceDetection"
-            active-text="启用"
-            inactive-text="禁用"
-          />
-        </el-form-item>
-
-        <el-form-item label="物体检测">
-          <el-switch
-            v-model="settings.objectDetection"
-            active-text="启用"
-            inactive-text="禁用"
-          />
-        </el-form-item>
-
-        <el-form-item label="情感分析">
-          <el-switch
-            v-model="settings.emotionAnalysis"
-            active-text="启用"
-            inactive-text="禁用"
-          />
-        </el-form-item>
-
-        <el-form-item label="置信度阈值">
-          <el-slider
-            v-model="settings.confidenceThreshold"
-            :min="0.1"
-            :max="1"
-            :step="0.1"
-            :format-tooltip="formatConfidence"
-            show-tooltip
-          />
-        </el-form-item>
+        <!-- 已移除通用AI分析设置，保留视频质量与性能设置 -->
 
         <!-- 性能设置 -->
         <el-divider content-position="left">性能设置</el-divider>
@@ -213,13 +166,6 @@ const settings = reactive({
   frameRate: 30,
   audioEnabled: true,
   
-  // AI分析设置
-  analysisInterval: 2,
-  faceDetection: true,
-  objectDetection: true,
-  emotionAnalysis: false,
-  confidenceThreshold: 0.5,
-  
   // 性能设置
   gpuAcceleration: true,
   batchSize: 1,
@@ -297,11 +243,6 @@ const resetSettings = () => {
         videoQuality: '720p',
         frameRate: 30,
         audioEnabled: true,
-        analysisInterval: 2,
-        faceDetection: true,
-        objectDetection: true,
-        emotionAnalysis: false,
-        confidenceThreshold: 0.5,
         gpuAcceleration: true,
         batchSize: 1,
         maxResults: 200
@@ -315,24 +256,34 @@ const resetSettings = () => {
 }
 
 const applySettings = async () => {
-  // 应用WebRTC设置
-  if (store.localStream) {
-    const videoTrack = store.localStream.getVideoTracks()[0]
-    if (videoTrack) {
-      const constraints = getVideoConstraints()
-      await videoTrack.applyConstraints(constraints)
+  // 计算视频约束
+  const constraints = getVideoConstraints()
+
+  // 1) 持久化到 store，用于后续 getUserMedia
+  if (store.streamSettings && store.streamSettings.value) {
+    store.streamSettings.value.video.width = constraints.width
+    store.streamSettings.value.video.height = constraints.height
+    store.streamSettings.value.video.frameRate = constraints.frameRate
+    store.streamSettings.value.audio.enabled = settings.audioEnabled
+  }
+
+  // 同步分析最大结果数量（仅影响前端历史长度）
+  if (store.updateAnalysisSettings) {
+    store.updateAnalysisSettings({ maxResults: settings.maxResults })
+  }
+
+  // 2) 若正在采集，实时应用到当前视频轨道
+  const ls = store.localStream
+  if (ls) {
+    const vt = ls.getVideoTracks && ls.getVideoTracks()[0]
+    if (vt) {
+      try {
+        await vt.applyConstraints(constraints)
+      } catch (e) {
+        console.warn('应用视频约束失败，将在下次启动时生效:', e)
+      }
     }
   }
-  
-  // 应用AI分析设置
-  store.updateAnalysisSettings({
-    interval: settings.analysisInterval * 1000,
-    faceDetection: settings.faceDetection,
-    objectDetection: settings.objectDetection,
-    emotionAnalysis: settings.emotionAnalysis,
-    confidenceThreshold: settings.confidenceThreshold,
-    maxResults: settings.maxResults
-  })
 }
 
 const getVideoConstraints = () => {
@@ -346,10 +297,6 @@ const getVideoConstraints = () => {
     ...qualityMap[settings.videoQuality],
     frameRate: settings.frameRate
   }
-}
-
-const formatConfidence = (value) => {
-  return `${(value * 100).toFixed(0)}%`
 }
 
 const getConnectionStatusType = () => {

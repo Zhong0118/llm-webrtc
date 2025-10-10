@@ -18,8 +18,8 @@ export default defineConfig({
     port: 3333,
     host: '0.0.0.0',
     https: {
-      key: fs.readFileSync('./certs/localhost+3-key.pem'), // 确保文件名匹配
-      cert: fs.readFileSync('./certs/localhost+3.pem'),     // 确保文件名匹配
+      key: fs.readFileSync('./certs/localhost+3-key.pem'), 
+      cert: fs.readFileSync('./certs/localhost+3.pem'),   
     },
     proxy: {
       '/api': {
