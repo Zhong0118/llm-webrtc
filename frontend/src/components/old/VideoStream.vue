@@ -181,7 +181,7 @@
 
 <script setup>
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
-import { useWebRTCStore } from '@/stores/webrtc'
+import { useWebRTCStore } from '@/stores/old/webrtc'
 import {
   VideoCamera,
   VideoCameraFilled,

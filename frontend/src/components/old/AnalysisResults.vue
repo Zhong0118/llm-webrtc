@@ -62,7 +62,7 @@
 
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
-import { useWebRTCStore } from '@/stores/webrtc'
+import { useWebRTCStore } from '@/stores/old/webrtc'
 import { storeToRefs } from 'pinia'
 import {
   DataAnalysis,

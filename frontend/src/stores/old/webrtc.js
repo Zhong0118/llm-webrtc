@@ -151,6 +151,71 @@ export const useWebRTCStore = defineStore('webrtc', () => {
   // 帧过滤器开关 控制是否启用视频帧过滤功能 提供视频美化功能 可能影响AI分析的准确性 增加视频处理的计算开销
   const isFrameFilterEnabled = ref(false)
 
+  // WebRTC统计信息
+  const statistics = ref({
+    video: {
+      codec: null,
+      resolution: null,
+      frameRate: 0,
+      bitrate: 0
+    },
+    audio: {
+      codec: null,
+      bitrate: 0
+    },
+    connection: {
+      latency: 0,
+      packetLoss: 0
+    }
+  })
+
+  // ==================== VLC推流状态管理 ====================
+  
+  /**
+   * VLC推流状态
+   * @type {Ref<Object>}
+   * @description 管理VLC推流的状态信息
+   */
+  const vlcStreamState = ref({
+    isAvailable: false,      // VLC模块是否可用
+    isStreaming: false,      // 是否正在推流
+    status: 'stopped',       // 推流状态: 'stopped', 'starting', 'streaming', 'stopping', 'error'
+    config: null,            // 当前推流配置
+    logs: [],               // 推流日志
+    error: null,            // 错误信息
+    lastUpdate: null        // 最后更新时间
+  })
+
+  /**
+   * VLC推流配置
+   * @type {Ref<Object>}
+   * @description VLC推流的配置参数
+   */
+  const vlcStreamConfig = ref({
+    input_source: 'Integrated Camera',  // 输入源（摄像头名称或文件路径）
+    rtsp_url: 'rtsp://localhost:8554/mystream',  // RTSP推流地址
+    resolution: '640x480',             // 分辨率
+    fps: 30,                           // 帧率
+    crf: 28,                           // 视频质量（CRF值）
+    preset: 'ultrafast',               // 编码预设
+    ffmpeg_path: 'ffmpeg'              // FFmpeg路径
+  })
+
+  /**
+   * 视频源类型
+   * @type {Ref<string>}
+   * @description 当前使用的视频源类型
+   * - 'webrtc': 使用WebRTC摄像头
+   * - 'vlc': 使用VLC推流
+   */
+  const videoSourceType = ref('webrtc')
+
+  // VLC推流状态计算属性
+  const isVlcAvailable = computed(() => vlcStreamState.value.isAvailable)
+  const isVlcStreaming = computed(() => vlcStreamState.value.isStreaming)
+  const vlcStatus = computed(() => vlcStreamState.value.status)
+  const vlcError = computed(() => vlcStreamState.value.error)
+
 
   const initializeWebRTC = async () => {
     // 防止重复初始化
@@ -991,6 +1056,188 @@ export const useWebRTCStore = defineStore('webrtc', () => {
     stopCall()
   }
 
+  // ==================== VLC推流管理函数 ====================
+
+  /**
+   * 获取VLC推流状态
+   * @returns {Promise<void>}
+   */
+  const getVlcStatus = async () => {
+    try {
+      const response = await fetch('/api/vlc/status')
+      if (response.ok) {
+        const data = await response.json()
+        vlcStreamState.value = {
+          ...vlcStreamState.value,
+          isAvailable: data.available,
+          isStreaming: data.streaming,
+          status: data.status,
+          config: data.config,
+          error: data.error,
+          lastUpdate: new Date()
+        }
+      }
+    } catch (error) {
+      console.error('获取VLC状态失败:', error)
+      vlcStreamState.value.error = error.message
+    }
+  }
+
+  /**
+   * 启动VLC推流
+   * @returns {Promise<boolean>}
+   */
+  const startVlcStream = async () => {
+    try {
+      vlcStreamState.value.status = 'starting'
+      vlcStreamState.value.error = null
+      
+      const response = await fetch('/api/vlc/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(vlcStreamConfig.value)
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        vlcStreamState.value.isStreaming = true
+        vlcStreamState.value.status = 'streaming'
+        console.log('VLC推流启动成功')
+        return true
+      } else {
+        const error = await response.json()
+        vlcStreamState.value.error = error.error
+        vlcStreamState.value.status = 'error'
+        console.error('VLC推流启动失败:', error.error)
+        return false
+      }
+    } catch (error) {
+      console.error('启动VLC推流时出错:', error)
+      vlcStreamState.value.error = error.message
+      vlcStreamState.value.status = 'error'
+      return false
+    }
+  }
+
+  /**
+   * 停止VLC推流
+   * @returns {Promise<boolean>}
+   */
+  const stopVlcStream = async () => {
+    try {
+      vlcStreamState.value.status = 'stopping'
+      
+      const response = await fetch('/api/vlc/stop', {
+        method: 'POST'
+      })
+      
+      if (response.ok) {
+        vlcStreamState.value.isStreaming = false
+        vlcStreamState.value.status = 'stopped'
+        vlcStreamState.value.error = null
+        console.log('VLC推流已停止')
+        return true
+      } else {
+        const error = await response.json()
+        vlcStreamState.value.error = error.error
+        vlcStreamState.value.status = 'error'
+        console.error('VLC推流停止失败:', error.error)
+        return false
+      }
+    } catch (error) {
+      console.error('停止VLC推流时出错:', error)
+      vlcStreamState.value.error = error.message
+      vlcStreamState.value.status = 'error'
+      return false
+    }
+  }
+
+  /**
+   * 更新VLC推流配置
+   * @param {Object} newConfig - 新的配置参数
+   * @returns {Promise<boolean>}
+   */
+  const updateVlcConfig = async (newConfig) => {
+    try {
+      const response = await fetch('/api/vlc/config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(newConfig)
+      })
+      
+      if (response.ok) {
+        vlcStreamConfig.value = { ...vlcStreamConfig.value, ...newConfig }
+        console.log('VLC配置更新成功')
+        return true
+      } else {
+        const error = await response.json()
+        console.error('VLC配置更新失败:', error.error)
+        return false
+      }
+    } catch (error) {
+      console.error('更新VLC配置时出错:', error)
+      return false
+    }
+  }
+
+  /**
+   * 获取VLC推流日志
+   * @returns {Promise<void>}
+   */
+  const getVlcLogs = async () => {
+    try {
+      const response = await fetch('/api/vlc/logs')
+      if (response.ok) {
+        const data = await response.json()
+        vlcStreamState.value.logs = data.logs || []
+      }
+    } catch (error) {
+      console.error('获取VLC日志失败:', error)
+    }
+  }
+
+  /**
+   * 切换视频源类型
+   * @param {string} sourceType - 视频源类型 ('webrtc' 或 'vlc')
+   */
+  const switchVideoSource = async (sourceType) => {
+    if (sourceType === videoSourceType.value) return
+    
+    try {
+      if (sourceType === 'vlc') {
+        // 切换到VLC推流
+        if (!vlcStreamState.value.isAvailable) {
+          throw new Error('VLC模块不可用')
+        }
+        
+        // 停止WebRTC
+        if (isStreamingState.value) {
+          stopCall()
+        }
+        
+        videoSourceType.value = 'vlc'
+        console.log('已切换到VLC推流源')
+        
+      } else if (sourceType === 'webrtc') {
+        // 切换到WebRTC
+        // 停止VLC推流
+        if (vlcStreamState.value.isStreaming) {
+          await stopVlcStream()
+        }
+        
+        videoSourceType.value = 'webrtc'
+        console.log('已切换到WebRTC摄像头源')
+      }
+    } catch (error) {
+      console.error('切换视频源失败:', error)
+      throw error
+    }
+  }
+
   return {
     
     isInitializing,
@@ -1007,6 +1254,7 @@ export const useWebRTCStore = defineStore('webrtc', () => {
     isStreamingState,
     isAnalysisEnabled,
     isFrameFilterEnabled,
+    statistics,
     signLanguageResults,
     latestSignLanguage,
     roomId,
@@ -1043,5 +1291,23 @@ export const useWebRTCStore = defineStore('webrtc', () => {
     configureCodecs,
     startStatsCollection,
 
+    // VLC推流相关状态
+    vlcStreamState,
+    vlcStreamConfig,
+    videoSourceType,
+    isVlcAvailable,
+    isVlcStreaming,
+    vlcStatus,
+    vlcError,
+    
+    // VLC推流相关方法
+    getVlcStatus,
+    startVlcStream,
+    stopVlcStream,
+    updateVlcConfig,
+    getVlcLogs,
+    switchVideoSource
+
   }
+
 })

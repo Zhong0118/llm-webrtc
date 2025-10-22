@@ -23,14 +23,25 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'https://localhost:8000',
         changeOrigin: true,
         ws: true
       },
       '/socket.io': {
-        target: 'ws://localhost:8000',
+        target: 'https://localhost:8000',
         ws: true,
         changeOrigin: true
+      },
+      '/ws': {
+        target: 'https://localhost:8000',
+        ws: true,
+        changeOrigin: true
+      },
+      '/ws-room': {
+        target: 'https://localhost:8000',
+        changeOrigin: true,
+        ws: true,
+        secure: false
       }
     }
   },

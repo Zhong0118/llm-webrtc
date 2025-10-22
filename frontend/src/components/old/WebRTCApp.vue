@@ -26,6 +26,9 @@
     <el-container class="main-container">
       <!-- 左侧视频区域 -->
       <el-main class="video-section">
+        <!-- 视频源管理组件 -->
+        <StreamManager />
+        <!-- 视频流组件 -->
         <VideoStream />
       </el-main>
 
@@ -145,9 +148,10 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useWebRTCStore } from '@/stores/webrtc'
+import { useWebRTCStore } from '@/stores/old/webrtc'
 import VideoStream from './VideoStream.vue'
 import AnalysisResults from './AnalysisResults.vue'
+import StreamManager from './StreamManager.vue'
 import {
   VideoCamera,
   DataAnalysis,

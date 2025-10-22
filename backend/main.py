@@ -3,11 +3,27 @@ import asyncio
 import logging
 import random
 import socketio
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+import sys
+import os
+
+# 添加VLC模块路径
+sys.path.append(os.path.join(os.path.dirname(__file__), 'VLC'))
+
+# 导入VLC推流模块
+try:
+    from streamer import RTSPStreamer
+    from config import DEFAULT_CONFIG
+    VLC_AVAILABLE = True
+    logging.info("✅ VLC推流模块加载成功")
+except ImportError as e:
+    VLC_AVAILABLE = False
+    logging.warning(f"⚠️ VLC推流模块加载失败: {e}")
 
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logging.info("--- V3 后端代码已成功加载，信令转发逻辑已更新 ---")
+logging.info("--- V4 后端代码已成功加载，WebRTC + VLC推流整合系统 ---")
 
 # 创建 Socket.IO 服务器实例
 # async_mode='asgi' 指定使用ASGI模式，与FastAPI兼容
@@ -24,6 +40,12 @@ app = socketio.ASGIApp(socketio_server=sio, other_asgi_app=fastapi_app)
 rooms = {}
 # 存储客户端信息：客户端SID -> 房间ID
 client_rooms = {}
+
+# VLC推流器实例（全局单例）
+vlc_streamer = None
+if VLC_AVAILABLE:
+    vlc_streamer = RTSPStreamer()
+    logging.info("🎥 VLC推流器实例创建成功")
 
 
 def get_or_create_room():
@@ -67,6 +89,41 @@ def get_room_peer(sid):
     room_clients = rooms[room_id]
     peers = [client for client in room_clients if client != sid]
     return peers[0] if peers else None
+
+async def mock_ai_analysis_task():
+    """
+    模拟AI分析任务的后台任务
+    定期发送模拟的AI分析结果
+    """
+    try:
+        while True:
+            await asyncio.sleep(5)  # 每5秒执行一次
+            
+            # 模拟AI分析结果
+            mock_result = {
+                'type': 'ai_analysis',
+                'timestamp': asyncio.get_event_loop().time(),
+                'data': {
+                    'face_detection': {
+                        'detected': random.choice([True, False]),
+                        'confidence': round(random.uniform(0.7, 0.95), 2)
+                    },
+                    'emotion': {
+                        'emotion': random.choice(['happy', 'neutral', 'surprised', 'focused']),
+                        'confidence': round(random.uniform(0.6, 0.9), 2)
+                    }
+                }
+            }
+            
+            # 向所有连接的客户端发送模拟结果
+            if rooms:
+                await sio.emit('ai_analysis_result', mock_result)
+                logging.info(f"发送模拟AI分析结果: {mock_result['data']}")
+                
+    except asyncio.CancelledError:
+        logging.info("AI分析任务已停止")
+    except Exception as e:
+        logging.error(f"AI分析任务错误: {e}")
 
 # 轻量方案：接收前端关键点并返回占位翻译结果
 @sio.on('analysis_keypoints')
@@ -262,6 +319,207 @@ async def handle_ice_candidate(sid, candidate):
         logging.info(f"ICE Candidate 已转发给对等端 {peer_sid}")
     else:
         logging.warning(f"未找到 sid='{sid}' 的对等端，无法转发 ICE Candidate")
+
+# ==================== VLC推流控制API ====================
+
+@fastapi_app.get("/api/vlc/status")
+async def get_vlc_status():
+    """获取VLC推流状态"""
+    if not VLC_AVAILABLE or not vlc_streamer:
+        raise HTTPException(status_code=503, detail="VLC推流模块不可用")
+    
+    try:
+        status = vlc_streamer.get_status()
+        return JSONResponse(content={
+            "success": True,
+            "data": status
+        })
+    except Exception as e:
+        logging.error(f"获取VLC状态失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取状态失败: {str(e)}")
+
+@fastapi_app.post("/api/vlc/start")
+async def start_vlc_stream(config: dict = None):
+    """启动VLC推流"""
+    if not VLC_AVAILABLE or not vlc_streamer:
+        raise HTTPException(status_code=503, detail="VLC推流模块不可用")
+    
+    try:
+        # 使用传入的配置或默认配置
+        stream_config = config or DEFAULT_CONFIG
+        success = vlc_streamer.start_stream(stream_config)
+        
+        if success:
+            # 通知所有连接的客户端推流已启动
+            await sio.emit('vlc_stream_started', {
+                'status': 'started',
+                'config': stream_config,
+                'timestamp': asyncio.get_event_loop().time()
+            })
+            
+            return JSONResponse(content={
+                "success": True,
+                "message": "推流启动成功",
+                "config": stream_config
+            })
+        else:
+            raise HTTPException(status_code=500, detail="推流启动失败")
+            
+    except Exception as e:
+        logging.error(f"启动VLC推流失败: {e}")
+        raise HTTPException(status_code=500, detail=f"启动失败: {str(e)}")
+
+@fastapi_app.post("/api/vlc/stop")
+async def stop_vlc_stream():
+    """停止VLC推流"""
+    if not VLC_AVAILABLE or not vlc_streamer:
+        raise HTTPException(status_code=503, detail="VLC推流模块不可用")
+    
+    try:
+        success = vlc_streamer.stop_stream()
+        
+        if success:
+            # 通知所有连接的客户端推流已停止
+            await sio.emit('vlc_stream_stopped', {
+                'status': 'stopped',
+                'timestamp': asyncio.get_event_loop().time()
+            })
+            
+            return JSONResponse(content={
+                "success": True,
+                "message": "推流停止成功"
+            })
+        else:
+            return JSONResponse(content={
+                "success": False,
+                "message": "推流停止失败或未在运行"
+            })
+            
+    except Exception as e:
+        logging.error(f"停止VLC推流失败: {e}")
+        raise HTTPException(status_code=500, detail=f"停止失败: {str(e)}")
+
+@fastapi_app.post("/api/vlc/config")
+async def update_vlc_config(new_config: dict):
+    """更新VLC推流配置"""
+    if not VLC_AVAILABLE or not vlc_streamer:
+        raise HTTPException(status_code=503, detail="VLC推流模块不可用")
+    
+    try:
+        # 验证配置参数
+        required_fields = ['input_source', 'rtsp_url']
+        for field in required_fields:
+            if field not in new_config:
+                raise HTTPException(status_code=400, detail=f"缺少必需字段: {field}")
+        
+        # 更新配置
+        vlc_streamer.update_config(new_config)
+        
+        return JSONResponse(content={
+            "success": True,
+            "message": "配置更新成功",
+            "config": new_config
+        })
+        
+    except Exception as e:
+        logging.error(f"更新VLC配置失败: {e}")
+        raise HTTPException(status_code=500, detail=f"配置更新失败: {str(e)}")
+
+@fastapi_app.get("/api/vlc/logs")
+async def get_vlc_logs(lines: int = 50):
+    """获取VLC推流日志"""
+    if not VLC_AVAILABLE or not vlc_streamer:
+        raise HTTPException(status_code=503, detail="VLC推流模块不可用")
+    
+    try:
+        logs = vlc_streamer.get_logs(lines)
+        return JSONResponse(content={
+            "success": True,
+            "data": {
+                "logs": logs,
+                "lines": len(logs)
+            }
+        })
+    except Exception as e:
+        logging.error(f"获取VLC日志失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取日志失败: {str(e)}")
+
+# ==================== Socket.IO VLC事件 ====================
+
+@sio.on('vlc_get_status')
+async def handle_vlc_get_status(sid):
+    """Socket.IO: 获取VLC状态"""
+    if not VLC_AVAILABLE or not vlc_streamer:
+        await sio.emit('vlc_status_error', {
+            'error': 'VLC推流模块不可用'
+        }, room=sid)
+        return
+    
+    try:
+        status = vlc_streamer.get_status()
+        await sio.emit('vlc_status_update', status, room=sid)
+    except Exception as e:
+        await sio.emit('vlc_status_error', {
+            'error': f'获取状态失败: {str(e)}'
+        }, room=sid)
+
+@sio.on('vlc_start_stream')
+async def handle_vlc_start_stream(sid, config=None):
+    """Socket.IO: 启动VLC推流"""
+    if not VLC_AVAILABLE or not vlc_streamer:
+        await sio.emit('vlc_stream_error', {
+            'error': 'VLC推流模块不可用'
+        }, room=sid)
+        return
+    
+    try:
+        stream_config = config or DEFAULT_CONFIG
+        success = vlc_streamer.start_stream(stream_config)
+        
+        if success:
+            # 广播给所有客户端
+            await sio.emit('vlc_stream_started', {
+                'status': 'started',
+                'config': stream_config,
+                'timestamp': asyncio.get_event_loop().time()
+            })
+        else:
+            await sio.emit('vlc_stream_error', {
+                'error': '推流启动失败'
+            }, room=sid)
+            
+    except Exception as e:
+        await sio.emit('vlc_stream_error', {
+            'error': f'启动失败: {str(e)}'
+        }, room=sid)
+
+@sio.on('vlc_stop_stream')
+async def handle_vlc_stop_stream(sid):
+    """Socket.IO: 停止VLC推流"""
+    if not VLC_AVAILABLE or not vlc_streamer:
+        await sio.emit('vlc_stream_error', {
+            'error': 'VLC推流模块不可用'
+        }, room=sid)
+        return
+    
+    try:
+        success = vlc_streamer.stop_stream()
+        
+        if success:
+            # 广播给所有客户端
+            await sio.emit('vlc_stream_stopped', {
+                'status': 'stopped',
+                'timestamp': asyncio.get_event_loop().time()
+            })
+        else:
+            await sio.emit('vlc_stream_error', {
+                'error': '推流停止失败或未在运行'
+            }, room=sid)
+            
+    except Exception as e:
+        await sio.emit('vlc_stream_error', {
+            'error': f'停止失败: {str(e)}'
+        }, room=sid)
 
 if __name__ == '__main__':
     import uvicorn

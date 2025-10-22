@@ -1,9 +1,9 @@
 <script setup>
-import WebRTCApp from './components/WebRTCApp.vue'
+import SimpleWebRTC from './views/SimpleWebRTC.vue'
 </script>
 
 <template>
-  <WebRTCApp />
+  <SimpleWebRTC />
 </template>
 
 <style>
@@ -20,8 +20,8 @@ body {
 }
 
 #app {
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
+  overflow-y: auto;
 }
 
 /* Element Plus 主题定制 */

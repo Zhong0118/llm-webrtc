@@ -1,0 +1,212 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>RTSP 推流控制台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* 增强表单可读性 */
+        .param-box label {
+            display: inline-block;
+            width: 80px;
+            margin: 10px 0;
+        }
+        .param-box select, .param-box input {
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .param-box select {
+            width: 120px;
+        }
+        .delay-box code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        /* 小屏幕适配 */
+        @media (max-width: 600px) {
+            .container { padding: 10px; }
+            h1 { font-size: 1.5em; }
+            .param-box select, .param-box input { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 RTSP 推流管理</h1>
+
+        <div class="status-box">
+            <h2>📊 当前状态</h2>
+            <p><strong>推流状态:</strong> <span id="status">未知</span></p>
+            <p><strong>RTSP 地址:</strong> <code id="rtspUrl">加载中...</code></p>
+            <p><strong>播放地址:</strong> <code>rtsp://你的IP:8554/mystream</code></p>
+        </div>
+
+        <div class="control-box">
+            <button id="startBtn" onclick="control('start')" disabled>▶️ 开始推流</button>
+            <button id="stopBtn" onclick="control('stop')" disabled>⏹️ 停止推流</button>
+        </div>
+
+        <!-- 参数设置 -->
+        <div class="param-box">
+            <h2>⚙️ 参数设置</h2>
+
+            <label>分辨率:</label>
+            <select id="resolution">
+                <option value="320x240">320x240</option>
+                <option value="640x480">640x480</option>
+                <option value="800x600">800x600</option>
+                <option value="1024x768">1024x768</option>
+                <option value="1280x720">1280x720</option>
+                <option value="1920x1080">1920x1080</option>
+            </select><br>
+
+            <label>帧率:</label>
+            <select id="fps">
+                <option value="15">15</option>
+                <option value="25">25</option>
+                <option value="30">30</option>
+                <option value="50">50</option>
+                <option value="60">60</option>
+            </select><br>
+
+            <label>CRF:</label>
+            <input type="number" id="crf" value="28" min="0" max="51" step="1"><br>
+
+            <label>预设:</label>
+            <select id="preset">
+                <option value="ultrafast">ultrafast</option>
+                <option value="superfast">superfast</option>
+                <option value="veryfast">veryfast</option>
+                <option value="faster">faster</option>
+                <option value="fast">fast</option>
+                <option value="medium">medium</option>
+            </select><br>
+
+            <button onclick="setParams()">🔄 应用参数</button>
+        </div>
+
+        <!-- 延迟信息 -->
+        <div class="delay-box">
+            <h2>⏱️ 延迟分析</h2>
+            <p><strong>采集延迟:</strong> <span id="captureDelay">--</span> ms</p>
+            <p><strong>编码延迟:</strong> <span id="encodeDelay">--</span> ms</p>
+            <p><strong>输出延迟:</strong> <span id="outputDelay">--</span> ms</p>
+            <p><strong>总延迟:</strong> <span id="totalDelay">--</span> ms</p>
+            <p><small><em>注：当前为“启动到首帧输出”总延迟，各阶段暂未细分</em></small></p>
+        </div>
+
+        <div class="log-box">
+            <h2>📝 操作日志</h2>
+            <ul id="logList"></ul>
+        </div>
+    </div>
+
+    <script>
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+
+        function updateStatus() {
+            fetch('/api/status')
+                .then(res => res.json())
+                .then(data => {
+                    // 状态和按钮
+                    document.getElementById('status').textContent = data.running ? '🟢 运行中' : '🔴 已停止';
+                    document.getElementById('rtspUrl').textContent = data.rtsp_url;
+                    startBtn.disabled = data.running;
+                    stopBtn.disabled = !data.running;
+
+                    // 日志
+                    const logList = document.getElementById('logList');
+                    logList.innerHTML = '';
+                    data.log.forEach(line => {
+                        const li = document.createElement('li');
+                        li.textContent = line;
+                        logList.appendChild(li);
+                    });
+                    logList.scrollTop = logList.scrollHeight;
+
+                    // ✅ 参数回显（选择项自动选中）
+                    if (data.resolution) {
+                        const resSelect = document.getElementById('resolution');
+                        for (let i = 0; i < resSelect.options.length; i++) {
+                            if (resSelect.options[i].value === data.resolution) {
+                                resSelect.selectedIndex = i;
+                                break;
+                            }
+                        }
+                    }
+                    if (data.fps) document.getElementById('fps').value = data.fps;
+                    if (data.crf) document.getElementById('crf').value = data.crf;
+                    if (data.preset) document.getElementById('preset').value = data.preset;
+
+                    // ✅ 延迟信息：只显示总延迟
+                    const delay = data.delay_info;
+                    if (delay && delay.total > 0) {
+                        const total = delay.total.toFixed(1);
+                        document.getElementById('captureDelay').textContent = total;
+                        document.getElementById('encodeDelay').textContent = total;
+                        document.getElementById('outputDelay').textContent = total;
+                        document.getElementById('totalDelay').textContent = total;
+                    } else {
+                        document.getElementById('captureDelay').textContent = '--';
+                        document.getElementById('encodeDelay').textContent = '--';
+                        document.getElementById('outputDelay').textContent = '--';
+                        document.getElementById('totalDelay').textContent = '--';
+                    }
+                })
+                .catch(err => {
+                    console.error('状态更新失败:', err);
+                    document.getElementById('status').textContent = '❌ 连接失败';
+                });
+        }
+
+        function control(action) {
+            fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action })
+            })
+            .then(res => res.json())
+            .then(data => {
+                console.log('控制响应:', data.result);
+            })
+            .catch(err => {
+                console.error('控制请求失败:', err);
+                alert('请求失败，请检查服务是否运行');
+            });
+        }
+
+        function setParams() {
+            const params = {
+                resolution: document.getElementById('resolution').value,
+                fps: parseInt(document.getElementById('fps').value),
+                crf: parseInt(document.getElementById('crf').value),
+                preset: document.getElementById('preset').value
+            };
+            fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'set_params', ...params })
+            })
+            .then(res => res.json())
+            .then(data => {
+                alert(data.result);
+            })
+            .catch(err => {
+                console.error('参数设置失败:', err);
+                alert('设置失败，请检查网络');
+            });
+        }
+
+        // 1秒更新状态
+        setInterval(updateStatus, 1000);
+        updateStatus(); // 更新一次
+    </script>
+</body>
+</html>
