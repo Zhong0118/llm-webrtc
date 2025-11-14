@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.IO 连接测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .warning { background-color: #fff3cd; color: #856404; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .btn-primary { background-color: #007bff; color: white; }
+        .btn-danger { background-color: #dc3545; color: white; }
+        #logs {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Socket.IO 连接测试</h1>
+    
+    <div id="status" class="status info">准备测试连接...</div>
+    
+    <div>
+        <button class="btn-primary" onclick="testDirectConnection()">测试直连后端 (33335)</button>
+        <button class="btn-primary" onclick="testProxyConnection()">测试通过Vite代理连接</button>
+        <button class="btn-danger" onclick="disconnectAll()">断开所有连接</button>
+        <button onclick="clearLogs()">清空日志</button>
+    </div>
+    
+    <h3>连接日志:</h3>
+    <div id="logs"></div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        let sockets = {};
+        
+        function log(message) {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            logs.textContent += `[${timestamp}] ${message}\n`;
+            logs.scrollTop = logs.scrollHeight;
+            console.log(message);
+        }
+        
+        function updateStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+        
+        function testDirectConnection() {
+            log('=== 开始测试直连后端 (https://localhost:33335) ===');
+            updateStatus('正在连接到后端...', 'warning');
+            
+            const socket = io('https://localhost:33335', {
+                transports: ['websocket'],
+                rejectUnauthorized: false, // 忽略自签名证书
+                timeout: 5000
+            });
+            
+            sockets['direct'] = socket;
+            
+            socket.on('connect', () => {
+                log('✅ 直连后端成功!');
+                updateStatus('直连后端成功', 'success');
+            });
+            
+            socket.on('connect_error', (error) => {
+                log(`❌ 直连后端失败: ${error.message}`);
+                updateStatus(`直连后端失败: ${error.message}`, 'error');
+            });
+            
+            socket.on('disconnect', (reason) => {
+                log(`🔌 直连后端断开: ${reason}`);
+                updateStatus('直连后端已断开', 'warning');
+            });
+        }
+        
+        function testProxyConnection() {
+            log('=== 开始测试通过Vite代理连接 ===');
+            updateStatus('正在通过代理连接...', 'warning');
+            
+            // 假设当前页面是通过Vite服务器访问的
+            const socket = io(window.location.origin, {
+                transports: ['websocket'],
+                path: '/socket.io',
+                timeout: 5000
+            });
+            
+            sockets['proxy'] = socket;
+            
+            socket.on('connect', () => {
+                log('✅ 通过Vite代理连接成功!');
+                updateStatus('代理连接成功', 'success');
+            });
+            
+            socket.on('connect_error', (error) => {
+                log(`❌ 代理连接失败: ${error.message}`);
+                updateStatus(`代理连接失败: ${error.message}`, 'error');
+            });
+            
+            socket.on('disconnect', (reason) => {
+                log(`🔌 代理连接断开: ${reason}`);
+                updateStatus('代理连接已断开', 'warning');
+            });
+        }
+        
+        function disconnectAll() {
+            log('=== 断开所有连接 ===');
+            Object.keys(sockets).forEach(key => {
+                if (sockets[key]) {
+                    sockets[key].disconnect();
+                    delete sockets[key];
+                }
+            });
+            updateStatus('所有连接已断开', 'info');
+        }
+        
+        function clearLogs() {
+            document.getElementById('logs').textContent = '';
+        }
+        
+        // 页面加载时的初始化
+        window.addEventListener('load', () => {
+            log('页面加载完成，准备测试Socket.IO连接');
+            log(`当前页面URL: ${window.location.href}`);
+            log(`当前页面Origin: ${window.location.origin}`);
+        });
+        
+        // 页面卸载时清理
+        window.addEventListener('beforeunload', () => {
+            disconnectAll();
+        });
+    </script>
+</body>
+</html>
