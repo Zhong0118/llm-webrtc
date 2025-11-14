@@ -169,9 +169,20 @@ export const useP2PStore = defineStore('p2p', () => {
                 throw err; 
             }
         }
+        
         console.log("Adding local tracks to PeerConnection...");
+        
+        const senders = pc.value.getSenders();
+        
         localStream.value.getTracks().forEach(track => {
-            pc.value.addTrack(track, localStream.value);
+            const senderExists = senders.some(sender => sender.track && sender.track.kind === track.kind);
+            
+            if (!senderExists) {
+                console.log(`Adding ${track.kind} track...`);
+                pc.value.addTrack(track, localStream.value);
+            } else {
+                console.log(`A ${track.kind} sender already exists. Skipping addTrack.`);
+            }
         });
     };
     const processIceCandidateBuffer = async () => {
