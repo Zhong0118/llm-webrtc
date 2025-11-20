@@ -2,6 +2,7 @@
 import time
 import logging
 import numpy as np
+from collections import deque
 import torch
 from ultralytics import YOLO
 
@@ -28,6 +29,11 @@ class AIProcessor:
         self.fps_start_time = time.time()
         self.fps_frame_counter = 0
         self.current_fps = 0.0
+
+        # [新增] 时序缓冲区
+        self.window_size = 16  # 例如手语模型需要 16 帧
+        self.frame_buffer = deque(maxlen=self.window_size)
+        self.frame_interval = 2 # 抽帧策略：每隔 2 帧取一帧，覆盖更长时间
 
     def process(self, frame):
         """
