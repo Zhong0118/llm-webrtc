@@ -55,6 +55,12 @@ export default defineConfig({
         ws: true,                          // 启用 WebSocket 代理
         changeOrigin: true,
         secure: false // 信任自签名证书
+      },
+      '/ai_analysis': {
+        target: 'https://localhost:33335', // 后端 HTTPS 地址
+        ws: true,                          // 启用 WebSocket 代理
+        changeOrigin: true,
+        secure: false // 信任自签名证书
       }
     }
   },

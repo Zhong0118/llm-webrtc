@@ -3,215 +3,510 @@
     <el-card class="box-card">
       <template #header>
         <div class="card-header">
-          <span>房间双人通话 (Socket.IO Refactored)</span>
-          <el-tag :type="connectionStateType" v-if="store.joined">
-            {{ store.connectionState }}
-          </el-tag>
-          <el-tag type="info" v-else>未加入房间</el-tag>
+          <div class="title-section">
+            <span class="main-title">WebRTC P2P + AI 全栈分析系统</span>
+            <el-tag :type="connectionStateType" v-if="p2pStore.joined" effect="dark" round>
+              {{ p2pStore.connectionState === 'connected' ? 'P2P 链路已通' : p2pStore.connectionState }}
+            </el-tag>
+          </div>
+          <div class="header-controls">
+            <input type="file" ref="fileInput" accept="video/*" style="display: none" @change="handleFileSelected">
+            <el-button size="small" @click="triggerSourceSwitch" :disabled="!p2pStore.joined">
+              <el-icon style="margin-right: 4px">
+                <VideoCamera />
+              </el-icon>
+              {{ isFileMode ? '切换回摄像头' : '切换本地文件' }}
+            </el-button>
+          </div>
         </div>
       </template>
 
-      <!-- (Alert 和 Form 保持不变) -->
-      <el-alert title="使用说明" type="info" :closable="false" style="margin-bottom: 16px;">
-        <p>1. 输入或生成一个房间ID。</p>
-        <p>2. 输入你的唯一 Peer ID。</p>
-        <p>3. 点击 "加入房间"。成功后，复制邀请链接发给对方。</p>
-        <p>4. 对方加入后，输入对方的 Peer ID，点击 "呼叫"。</p>
-        <p><strong>跨设备连接：</strong>确保其他设备可访问 <code>{{ currentHost }}:33335</code></p>
-      </el-alert>
-      <el-form label-width="100px" class="room-form">
-        <el-form-item label="房间ID">
-          <el-input v-model="roomIdComputed" placeholder="双方必须相同" :disabled="store.joined">
-            <template #append>
-              <el-button @click="generateRoomId" :disabled="store.joined">生成</el-button>
-            </template>
-          </el-input>
-        </el-form-item>
-        <el-form-item label="我的ID">
-          <el-input v-model="myPeerIdComputed" placeholder="你的唯一标识" :disabled="store.joined" />
-        </el-form-item>
-        <el-form-item label="对端ID">
-          <el-input v-model="targetPeerIdComputed" placeholder="呼叫目标的ID" />
-          <el-text v-if="store.otherPeerId" size="small" type="info" style="margin-left: 10px;">
-            房间成员: {{ store.otherPeerId }}
-          </el-text>
-        </el-form-item>
-        <el-form-item>
-          <el-space>
-            <el-button type="primary" :disabled="store.joined" @click="handleJoinRoom">加入房间</el-button>
-            <el-button :disabled="!store.joined" @click="store.leaveRoom">离开房间</el-button>
-            <el-button type="success" :disabled="!store.joined || store.calling || !store.targetPeerId"
-              @click="handleStartCall">呼叫</el-button>
-            <el-button type="warning" :disabled="!store.calling && store.connectionState === 'disconnected'"
-              @click="store.hangup">挂断</el-button>
-            <el-button @click="copyInviteLink" :disabled="!store.roomId">复制邀请链接</el-button>
-          </el-space>
-        </el-form-item>
-      </el-form>
-      <!-- (视频区域保持不变) -->
-      <div class="videos">
-        <el-card class="video-card" shadow="never">
-          <template #header><span>本地视频</span></template>
-          <video ref="localVideoEl" autoplay playsinline muted class="video" />
-        </el-card>
-        <el-card class="video-card" shadow="never">
-          <template #header><span>远端视频</span></template>
-          <video ref="remoteVideoEl" autoplay playsinline class="video" />
-        </el-card>
+      <div class="dashboard-section" v-if="p2pStore.connectionState === 'connected'">
+        <div class="section-title">📡 P2P 链路监控 (Direct)</div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">往返时延 (RTT)</div>
+            <div class="stat-value">{{ p2pStore.stats.ice.roundTripTimeMs }} <span class="unit">ms</span></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">接收带宽 (In)</div>
+            <div class="stat-value">{{ p2pStore.stats.inbound.bitrateKbps }} <span class="unit">kbps</span></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">发送带宽 (Out)</div>
+            <div class="stat-value">{{ p2pStore.stats.outbound.bitrateKbps }} <span class="unit">kbps</span></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">丢包率</div>
+            <div class="stat-value">{{ p2pStore.stats.inbound.packetsLost }} <span class="unit">pkts</span></div>
+          </div>
+        </div>
       </div>
 
-      <!-- [ 关键修复 ]：修改 v-if 条件 -->
-      <el-card class="stats-card" shadow="never"
-        v-if="store.joined && store.connectionState !== 'disconnected' && store.connectionState !== 'closed'">
-        <template #header><span>连接统计</span></template>
-        <el-descriptions :column="3" size="small" border>
-          <el-descriptions-item label="入方向码率(kbps)">{{ store.stats.inbound.bitrateKbps }}</el-descriptions-item>
-          <el-descriptions-item label="入方向FPS">{{ store.stats.inbound.framesPerSecond }}</el-descriptions-item>
-          <el-descriptions-item label="入方向丢包">{{ store.stats.inbound.packetsLost }}</el-descriptions-item>
-          <el-descriptions-item label="出方向码率(kbps)">{{ store.stats.outbound.bitrateKbps }}</el-descriptions-item>
-          <el-descriptions-item label="出方向FPS">{{ store.stats.outbound.framesPerSecond }}</el-descriptions-item>
-          <el-descriptions-item label="ICE RTT(ms)">{{ store.stats.ice.roundTripTimeMs }}</el-descriptions-item>
-          <el-descriptions-item label="本地候选">{{ store.stats.ice.localCandidateType }}</el-descriptions-item>
-          <el-descriptions-item label="远端候选">{{ store.stats.ice.remoteCandidateType }}</el-descriptions-item>
-        </el-descriptions>
-      </el-card>
-      <!-- [ 修复结束 ] -->
+      <div class="dashboard-section" v-if="hasActiveResults">
+        <div class="section-title">🤖 AI 引擎性能监控 (Server Side)</div>
+
+        <div v-for="(result, peerId) in aiStore.resultsMap" :key="peerId" class="ai-stat-row">
+          <div class="identity-tag">
+            <el-tag size="small" :type="peerId === p2pStore.myPeerId ? 'danger' : 'warning'" effect="dark">
+              {{ peerId === p2pStore.myPeerId ? 'Local AI' : `Remote AI (${peerId})` }}
+            </el-tag>
+          </div>
+
+          <div class="ai-metrics">
+            <el-tooltip content="服务器当前的处理帧率" placement="top">
+              <span class="metric">FPS: <strong>{{ result.fps || '-' }}</strong></span>
+            </el-tooltip>
+
+            <el-tooltip content="YOLO 模型纯推理耗时 (Infer)" placement="top">
+              <span class="metric">推理: <strong>{{ result.inference_time }}ms</strong></span>
+            </el-tooltip>
+
+            <el-tooltip content="总处理耗时 (Process = Decode + Infer + Encode)" placement="top">
+              <span class="metric">处理: <strong>{{ result.process_time }}ms</strong></span>
+            </el-tooltip>
+
+            <el-tooltip content="从服务器发出到前端收到的网络延迟" placement="top">
+              <span class="metric">传输延迟: <strong>{{ calculateDelay(result.timestamp) }}ms</strong></span>
+            </el-tooltip>
+
+            <span class="metric">对象: <strong>{{ result.objects ? result.objects.length : 0 }}</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-bar">
+        <el-form :inline="true" size="default">
+          <el-form-item label="房间 ID">
+            <el-input v-model="roomIdComputed" placeholder="1001" style="width: 80px" :disabled="p2pStore.joined">
+              <template #prefix>#</template>
+            </el-input>
+          </el-form-item>
+          <el-form-item label="我的 ID">
+            <el-input v-model="myPeerIdComputed" style="width: 90px" disabled />
+          </el-form-item>
+          <el-form-item label="目标 ID">
+            <el-input v-model="targetPeerIdComputed" placeholder="对方 ID" style="width: 90px" />
+          </el-form-item>
+          <el-form-item>
+            <el-button v-if="!p2pStore.joined" type="primary" @click="handleJoinRoom" :loading="joining">加入</el-button>
+            <template v-else>
+              <el-button v-if="!p2pStore.calling" type="success" @click="handleStartCall"
+                :disabled="!p2pStore.targetPeerId">呼叫</el-button>
+              <el-button v-else type="danger" @click="p2pStore.hangup">挂断</el-button>
+              <el-button type="warning" @click="p2pStore.leaveRoom">离开</el-button>
+            </template>
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <div class="videos-grid">
+        <el-card class="video-card" :body-style="{ padding: '0px' }">
+          <div class="video-toolbar">
+            <span class="video-label">Local (我) - {{ isFileMode ? '文件模式' : '摄像头' }}</span>
+            <el-tag v-if="aiStore.isSending" size="small" type="danger" effect="plain">AI 推流中</el-tag>
+          </div>
+
+          <div class="video-wrapper">
+            <video v-show="!isFileMode" ref="localVideoEl" autoplay playsinline muted class="video-element" />
+
+            <video v-show="isFileMode" ref="fileVideoEl" controls loop playsinline class="video-element file-player" />
+
+            <AIOverlay v-if="p2pStore.myPeerId && aiStore.resultsMap[p2pStore.myPeerId]"
+              :result="aiStore.resultsMap[p2pStore.myPeerId]" :filter-peer-id="p2pStore.myPeerId"
+              :video-element="isFileMode ? fileVideoEl : localVideoEl" />
+          </div>
+        </el-card>
+
+        <el-card class="video-card" :body-style="{ padding: '0px' }">
+          <div class="video-toolbar">
+            <span class="video-label">Remote (对方)</span>
+            <el-button size="small" :type="isRemoteAnalyzing ? 'danger' : 'warning'" @click="toggleRemoteAI"
+              :loading="remoteLoading" :disabled="!p2pStore.targetPeerId" plain>
+              {{ isRemoteAnalyzing ? '停止分析' : '分析对方' }}
+            </el-button>
+          </div>
+          <div class="video-wrapper">
+            <video ref="remoteVideoEl" autoplay playsinline class="video-element" />
+            <AIOverlay v-if="p2pStore.targetPeerId && aiStore.resultsMap[p2pStore.targetPeerId]"
+              :result="aiStore.resultsMap[p2pStore.targetPeerId]" :filter-peer-id="p2pStore.targetPeerId"
+              :video-element="remoteVideoEl" />
+            <div v-if="!p2pStore.remoteStream" class="no-signal"><span>等待视频...</span></div>
+          </div>
+        </el-card>
+      </div>
 
     </el-card>
   </div>
 </template>
 
 <script setup>
-// ( <script setup> 区域保持 V20 不变 )
-import { ref, watch, onMounted, computed } from 'vue';
+import { ref, watch, computed, nextTick } from 'vue';
 import { useP2PStore } from '@/stores/useP2PStore';
+import { useAIStore } from '@/stores/useAIStore';
+import { useSocketStore } from '@/stores/useSocketStore';
+import AIOverlay from './AIOverlay.vue';
 import { ElMessage } from 'element-plus';
+import { VideoCamera } from '@element-plus/icons-vue';
 
-const store = useP2PStore();
+const p2pStore = useP2PStore();
+const aiStore = useAIStore();
+const socketStore = useSocketStore();
+
+// DOM Refs
 const localVideoEl = ref(null);
 const remoteVideoEl = ref(null);
-const currentHost = computed(() => window.location.hostname);
+const fileInput = ref(null);
+const fileVideoEl = ref(null);
 
-watch(() => store.localStream, (newStream) => {
-  if (localVideoEl.value) {
-    localVideoEl.value.srcObject = newStream;
-  }
-});
-watch(() => store.remoteStream, (newStream) => {
-  if (remoteVideoEl.value) {
-    remoteVideoEl.value.srcObject = newStream;
-  }
-});
+// UI States
+const remoteLoading = ref(false);
+const joining = ref(false);
+const shouldAnalyzeRemote = ref(false);
+const isFileMode = ref(false); // 标记当前是否为文件模式
 
-const roomIdComputed = computed({
-  get: () => store.roomId,
-  set: (value) => { store.roomId = value; }
-});
-const myPeerIdComputed = computed({
-  get: () => store.myPeerId,
-  set: (value) => { store.myPeerId = value; }
-});
-const targetPeerIdComputed = computed({
-  get: () => store.targetPeerId,
-  set: (value) => { store.targetPeerId = value; }
-});
-
-const handleJoinRoom = () => {
-  store.joinRoom(roomIdComputed.value, myPeerIdComputed.value);
-};
-const handleStartCall = () => {
-  store.startCall(targetPeerIdComputed.value);
-};
-const generateRoomId = () => {
-  store.roomId = Math.random().toString(36).slice(2, 8).toUpperCase();
-  ElMessage.success(`Generated Room ID: ${store.roomId}`);
-};
-const inviteUrl = () => `${window.location.origin}${window.location.pathname}?mode=p2p&room=${encodeURIComponent(store.roomId)}&target=${encodeURIComponent(store.myPeerId)}`;
-const copyInviteLink = async () => {
-  if (!store.roomId) {
-    ElMessage.warning('请先生成或填写房间ID')
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(inviteUrl())
-    ElMessage.success('邀请链接已复制到剪贴板')
-  } catch (_) {
-    ElMessage.info(`邀请链接：${inviteUrl()}`)
-  }
-};
+// Computed
+const roomIdComputed = computed({ get: () => p2pStore.roomId, set: (v) => p2pStore.roomId = v });
+const myPeerIdComputed = computed({ get: () => p2pStore.myPeerId, set: (v) => p2pStore.myPeerId = v });
+const targetPeerIdComputed = computed({ get: () => p2pStore.targetPeerId, set: (v) => p2pStore.targetPeerId = v });
 const connectionStateType = computed(() => {
-  switch (store.connectionState) {
-    case 'connected': return 'success';
-    case 'connecting': case 'checking': return 'warning';
-    case 'failed': return 'danger';
-    default: return 'info';
-  }
+  if (p2pStore.connectionState === 'connected') return 'success';
+  if (['connecting', 'checking'].includes(p2pStore.connectionState)) return 'warning';
+  return 'info';
+});
+const hasActiveResults = computed(() => Object.keys(aiStore.resultsMap).length > 0);
+
+// 状态判断
+const isRemoteAnalyzing = computed(() => {
+  const hasData = p2pStore.targetPeerId && !!aiStore.resultsMap[p2pStore.targetPeerId];
+  return shouldAnalyzeRemote.value || hasData;
 });
 
-onMounted(() => {
-  const params = new URLSearchParams(window.location.search);
-  const rid = params.get('room');
-  const tid = params.get('target');
+// 延迟计算
+const calculateDelay = (timestamp) => {
+  if (!timestamp) return 0;
+  const now = Date.now() / 1000;
+  return Math.max(0, Math.round((now - timestamp) * 1000));
+};
 
-  if (rid && !store.roomId) {
-    store.roomId = rid;
-    ElMessage.info(`Room ID from URL: ${rid}`);
+// 视频流绑定
+watch(() => p2pStore.localStream, (s) => {
+  // 只有在不是文件模式时，才把流赋给 localVideoEl (摄像头)
+  if (localVideoEl.value && s && !isFileMode.value) {
+    localVideoEl.value.srcObject = s;
   }
-  if (tid && !store.targetPeerId) {
-    store.targetPeerId = tid;
-    ElMessage.info(`Target ID from URL: ${tid}`);
-  }
+}, { immediate: true });
 
-  if (store.roomId && store.myPeerId) {
-    console.log("Attempting auto-join from URL params...");
-    handleJoinRoom();
+watch(() => p2pStore.remoteStream, (s) => { if (remoteVideoEl.value && s) remoteVideoEl.value.srcObject = s; }, { immediate: true });
+
+// --- 视频源切换逻辑 ---
+
+const triggerSourceSwitch = () => {
+  if (isFileMode.value) {
+    switchToCamera();
+  } else {
+    if (fileInput.value) fileInput.value.value = '';
+    fileInput.value.click();
   }
-});
+};
+
+const switchToCamera = async () => {
+  try {
+    await p2pStore.startLocalPreview();
+    if (p2pStore.localStream) {
+      await p2pStore.switchVideoStream(p2pStore.localStream);
+    }
+    // 暂停文件
+    if (fileVideoEl.value) {
+      fileVideoEl.value.pause();
+      fileVideoEl.value.src = "";
+    }
+    isFileMode.value = false;
+    ElMessage.success("已切换回摄像头");
+  } catch (e) {
+    ElMessage.error("切回摄像头失败: " + e.message);
+  }
+};
+
+const handleFileSelected = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const v = fileVideoEl.value;
+
+  // 1. 先清理旧资源
+  if (v.src && v.src.startsWith('blob:')) URL.revokeObjectURL(v.src);
+
+  // 2. 先切换 UI 模式，让视频元素渲染出来
+  isFileMode.value = true;
+
+  // [关键修复] 等待 Vue 完成 DOM 更新，确保 <video> 不再是 display: none
+  await nextTick();
+
+  const url = URL.createObjectURL(file);
+  v.src = url;
+
+  ElMessage.info("正在解析视频...");
+
+  // 定义启动逻辑
+  const startCapture = async () => {
+    try {
+      // 尝试播放
+      await v.play();
+
+      // 捕获流
+      const stream = v.captureStream ? v.captureStream() : (v.mozCaptureStream ? v.mozCaptureStream() : null);
+
+      if (!stream) {
+        throw new Error("浏览器不支持 captureStream");
+      }
+
+      // 检查轨道 (带重试)
+      let retries = 0;
+      const checkTracks = () => {
+        const tracks = stream.getVideoTracks();
+        if (tracks.length > 0) {
+          console.log("成功捕获文件视频轨道:", tracks[0]);
+          // 成功！切换 P2P 流
+          p2pStore.switchVideoStream(stream);
+          ElMessage.success("视频源已切换 (可拖动进度)");
+        } else {
+          if (retries < 30) { // 增加到 3秒
+            retries++;
+            // console.log(`等待视频轨道... ${retries}`);
+            setTimeout(checkTracks, 100);
+          } else {
+            // [关键修改] 即使捕获失败，也不要关闭播放器 (isFileMode = false)
+            // 这样用户至少可以在本地看视频
+            ElMessage.error("⚠️ 警告: 视频画面无法传给对方 (轨道捕获超时)");
+            console.error("Capture stream has no video tracks after timeout");
+          }
+        }
+      };
+      checkTracks();
+
+    } catch (err) {
+      console.error("视频启动失败:", err);
+      ElMessage.error("视频启动失败: " + err.message);
+      // 只有播放都失败了，才关掉播放器
+      // isFileMode.value = false; 
+    }
+  };
+
+  // 绑定事件
+  v.oncanplay = () => {
+    // 防止重复触发
+    v.oncanplay = null;
+    startCapture();
+  };
+
+  v.onerror = () => {
+    ElMessage.error("视频文件解码错误");
+  };
+};
+
+// 远程 AI 控制
+const toggleRemoteAI = async () => {
+  if (!p2pStore.targetPeerId) { ElMessage.warning("无目标用户"); return; }
+  const p2pSocket = socketStore.getSocket('/p2p');
+  remoteLoading.value = true;
+
+  if (isRemoteAnalyzing.value) {
+    p2pSocket.emit('signal', { type: 'control', action: 'stop-ai', roomId: p2pStore.roomId, to: p2pStore.targetPeerId });
+    shouldAnalyzeRemote.value = false;
+    if (aiStore.resultsMap[p2pStore.targetPeerId]) delete aiStore.resultsMap[p2pStore.targetPeerId];
+    ElMessage.info("已停止");
+    remoteLoading.value = false;
+  } else {
+    try {
+      await aiStore.joinAIRoomOnly(p2pStore.roomId);
+      p2pSocket.emit('signal', { type: 'control', action: 'start-ai', roomId: p2pStore.roomId, to: p2pStore.targetPeerId });
+      shouldAnalyzeRemote.value = true;
+      ElMessage.success(`已请求开启`);
+      setTimeout(() => { remoteLoading.value = false; }, 500);
+    } catch (e) { remoteLoading.value = false; ElMessage.error(e.message); }
+  }
+};
+
+const handleJoinRoom = async () => { joining.value = true; try { await p2pStore.joinRoom(roomIdComputed.value, myPeerIdComputed.value); } finally { joining.value = false; } };
+const handleStartCall = () => p2pStore.startCall(targetPeerIdComputed.value);
 </script>
 
 <style scoped>
-/* ( <style> 区域保持 V20 不变 ) */
 .webrtc-core {
-  width: 100%;
-  max-width: 1100px;
+  max-width: 90%;
   margin: 0 auto;
-  padding: 24px;
-}
-
-.box-card {
-  border-radius: 10px;
+  padding: 20px;
+  font-family: sans-serif;
 }
 
 .card-header {
   display: flex;
+  justify-content: space-between;
   align-items: center;
+}
+
+.title-section {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.main-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+}
+
+/* Dashboard Styles */
+.dashboard-section {
+  background: #f8f9fa;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  border: 1px solid #ebeef5;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #606266;
+  margin-bottom: 10px;
+  border-left: 4px solid #409eff;
+  padding-left: 8px;
+}
+
+/* P2P Grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 15px;
+}
+
+.stat-card {
+  background: white;
+  padding: 10px;
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  text-align: center;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-size: 18px;
+  font-weight: bold;
+  color: #303133;
+}
+
+.unit {
+  font-size: 12px;
+  font-weight: normal;
+  color: #909399;
+}
+
+/* AI Grid */
+.ai-stat-row {
+  display: flex;
+  align-items: center;
+  background: white;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
   justify-content: space-between;
 }
 
-.room-form {
-  margin-top: 8px;
+.ai-metrics {
+  display: flex;
+  gap: 20px;
+  font-size: 14px;
+  font-family: monospace;
 }
 
-.videos {
+.metric strong {
+  color: #409eff;
+}
+
+.upload-metrics {
+  font-size: 12px;
+  color: #909399;
+  display: flex;
+  gap: 15px;
+  background: #f0f9eb;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.control-bar {
+  margin-bottom: 20px;
+  background: #f5f7fa;
+  padding: 15px 15px 0 15px;
+  border-radius: 6px;
+}
+
+.videos-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-top: 12px;
+  gap: 24px;
 }
 
 .video-card {
-  border-radius: 10px;
-}
-
-.video {
-  width: 100%;
-  background: #000;
+  border: 1px solid #e4e7ed;
   border-radius: 8px;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
+  overflow: hidden;
 }
 
-.stats-card {
-  margin-top: 12px;
+.video-toolbar {
+  padding: 10px 15px;
+  background: #f5f7fa;
+  border-bottom: 1px solid #e4e7ed;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 40px;
+}
+
+.video-label {
+  font-weight: 600;
+  color: #606266;
+}
+
+.video-wrapper {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background-color: #000;
+}
+
+.video-element {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.file-player {
+  background: #000;
+}
+
+.no-signal {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #909399;
+}
+
+@media (max-width: 768px) {
+  .videos-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 </style>

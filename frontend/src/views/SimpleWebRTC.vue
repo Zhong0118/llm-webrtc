@@ -8,7 +8,7 @@
       <el-radio-button label="serverPush">观看服务器直播</el-radio-button>
     </el-radio-group>
 
-    <StreamManager style="margin-bottom: 20px;"/>
+    <StreamManager style="margin-bottom: 20px; max-width: 70%;"/>
 
     <div class="viewing-area">
       <WebRTCCore v-if="currentMode === 'p2p'" />
@@ -69,7 +69,7 @@ onUnmounted(() => {
 
 <style scoped>
 .simple-webrtc {
-  max-width: 1100px;
+  max-width: 100%;
   margin: 0 auto;
   padding: 20px;
 }
