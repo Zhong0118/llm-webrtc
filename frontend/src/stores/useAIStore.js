@@ -10,11 +10,11 @@ export const useAIStore = defineStore('ai', () => {
   const aiSocket = ref(null)
   const pc = ref(null)
 
-  const isConnected = ref(false) 
-  const isSending = ref(false)   
-  const isReceiving = ref(false) 
+  const isConnected = ref(false)
+  const isSending = ref(false)
+  const isReceiving = ref(false)
 
-  const resultsMap = reactive({}) 
+  const resultsMap = reactive({})
 
   const netStats = reactive({ rtt: 0, bitrate: 0, fps: 0, packetLoss: 0 })
   let statsTimer = null
@@ -38,12 +38,10 @@ export const useAIStore = defineStore('ai', () => {
     socket.off('ai_result');
     socket.on('ai_result', (data) => {
       if (data && data.peerId) {
-          // 直接覆盖 Key，触发 Vue 响应式更新
-          resultsMap[data.peerId] = data; 
+        resultsMap[data.peerId] = data;
       }
     });
   }
-
   const joinAIRoomOnly = async (roomId) => {
     if (!roomId) return
     aiSocket.value = socketStore.getSocket(AI_NAMESPACE)
@@ -56,18 +54,17 @@ export const useAIStore = defineStore('ai', () => {
       console.error(err)
     }
   }
-
   const connectAI = async (stream, roomId, myPeerId) => {
     if (isConnected.value) return
     if (!stream || !myPeerId) {
       ElMessage.warning('启动 AI 失败：缺少流或 PeerID')
       return
     }
-    
+
     // 确保流有轨道
     if (stream.getVideoTracks().length === 0) {
-        ElMessage.error('启动 AI 失败：视频流没有轨道')
-        return
+      ElMessage.error('启动 AI 失败：视频流没有轨道')
+      return
     }
 
     aiSocket.value = socketStore.getSocket(AI_NAMESPACE)
@@ -75,9 +72,9 @@ export const useAIStore = defineStore('ai', () => {
     try {
       await ensureSocketConnected(aiSocket.value)
       setupResultListener(aiSocket.value)
-      
+
       aiSocket.value.emit('join', { roomId })
-      isReceiving.value = true 
+      isReceiving.value = true
 
       pc.value = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -103,7 +100,7 @@ export const useAIStore = defineStore('ai', () => {
           startStatsLoop()
           ElMessage.success('AI 推流已建立')
         } else if (['disconnected', 'failed', 'closed'].includes(pc.value.connectionState)) {
-          stopSender()
+          stopStreaming()
         }
       }
 
@@ -123,7 +120,7 @@ export const useAIStore = defineStore('ai', () => {
     } catch (err) {
       console.error(err)
       ElMessage.error(`AI 连接失败: ${err.message}`)
-      stopAI()
+      stopStreaming()
     }
   }
 
@@ -151,21 +148,31 @@ export const useAIStore = defineStore('ai', () => {
             prevTimestamp = now
           }
         }
-      } catch (e) {}
+      } catch (e) { }
     }, 1000)
   }
 
-  const stopSender = () => {
-    if (statsTimer) clearInterval(statsTimer)
-    if (pc.value) { pc.value.close(); pc.value = null; }
+  const stopStreaming = () => {
+    if (statsTimer) {
+        clearInterval(statsTimer)
+        statsTimer = null
+    }
+    if (pc.value) {
+      pc.value.close()
+      pc.value = null
+    }
     isConnected.value = false
     isSending.value = false
     netStats.rtt = 0
+    // 注意：这里千万不要 off 掉 socket 事件，也不要清空 resultsMap
+    console.log("AI 推流已停止 (接收服务保持)");
   }
 
-  const stopAI = () => {
-    stopSender()
-    // 清空对象
+// 【核心修复】彻底断开 (离开房间用)
+  const disconnectAll = () => {
+    stopStreaming() // 先停推流
+    
+    // 再停接收
     for (const key in resultsMap) delete resultsMap[key];
     isReceiving.value = false
     
@@ -173,13 +180,15 @@ export const useAIStore = defineStore('ai', () => {
       aiSocket.value.off('ai_result')
       aiSocket.value.off('answer')
       aiSocket.value.off('candidate')
+      // 不调用 socket.disconnect()，交给 SocketStore 管理复用
     }
+    console.log("AI 服务完全断开");
   }
 
-  onUnmounted(() => { stopAI() })
+  onUnmounted(() => { disconnectAll() })
 
   return {
     isConnected, isSending, isReceiving, resultsMap, netStats,
-    connectAI, joinAIRoomOnly, stopAI
+    connectAI, joinAIRoomOnly, disconnectAll, stopStreaming
   }
 })

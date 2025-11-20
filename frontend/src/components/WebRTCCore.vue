@@ -46,31 +46,33 @@
       <div class="dashboard-section" v-if="hasActiveResults">
         <div class="section-title">🤖 AI 引擎性能监控 (Server Side)</div>
 
-        <div v-for="(result, peerId) in aiStore.resultsMap" :key="peerId" class="ai-stat-row">
-          <div class="identity-tag">
-            <el-tag size="small" :type="peerId === p2pStore.myPeerId ? 'danger' : 'warning'" effect="dark">
-              {{ peerId === p2pStore.myPeerId ? 'Local AI' : `Remote AI (${peerId})` }}
-            </el-tag>
-          </div>
+        <div v-for="(result, peerId) in aiStore.resultsMap" :key="peerId">
+          <div v-if="shouldShowData(peerId)" class="ai-stat-row">
+            <div class="identity-tag">
+              <el-tag size="small" :type="peerId === p2pStore.myPeerId ? 'danger' : 'warning'" effect="dark">
+                {{ peerId === p2pStore.myPeerId ? 'Local AI' : `Remote AI (${peerId})` }}
+              </el-tag>
+            </div>
 
-          <div class="ai-metrics">
-            <el-tooltip content="服务器当前的处理帧率" placement="top">
-              <span class="metric">FPS: <strong>{{ result.fps || '-' }}</strong></span>
-            </el-tooltip>
+            <div class="ai-metrics">
+              <el-tooltip content="服务器当前的处理帧率" placement="top">
+                <span class="metric">FPS: <strong>{{ result.fps || '-' }}</strong></span>
+              </el-tooltip>
 
-            <el-tooltip content="YOLO 模型纯推理耗时 (Infer)" placement="top">
-              <span class="metric">推理: <strong>{{ result.inference_time }}ms</strong></span>
-            </el-tooltip>
+              <el-tooltip content="YOLO 模型纯推理耗时 (Infer)" placement="top">
+                <span class="metric">推理: <strong>{{ result.inference_time }}ms</strong></span>
+              </el-tooltip>
 
-            <el-tooltip content="总处理耗时 (Process = Decode + Infer + Encode)" placement="top">
-              <span class="metric">处理: <strong>{{ result.process_time }}ms</strong></span>
-            </el-tooltip>
+              <el-tooltip content="总处理耗时 (Process = Decode + Infer + Encode)" placement="top">
+                <span class="metric">处理: <strong>{{ result.process_time }}ms</strong></span>
+              </el-tooltip>
 
-            <el-tooltip content="从服务器发出到前端收到的网络延迟" placement="top">
-              <span class="metric">传输延迟: <strong>{{ calculateDelay(result.timestamp) }}ms</strong></span>
-            </el-tooltip>
+              <el-tooltip content="从服务器发出到前端收到的网络延迟" placement="top">
+                <span class="metric">传输延迟: <strong>{{ calculateDelay(result.timestamp) }}ms</strong></span>
+              </el-tooltip>
 
-            <span class="metric">对象: <strong>{{ result.objects ? result.objects.length : 0 }}</strong></span>
+              <span class="metric">对象: <strong>{{ result.objects ? result.objects.length : 0 }}</strong></span>
+            </div>
           </div>
         </div>
       </div>
@@ -112,7 +114,7 @@
 
             <video v-show="isFileMode" ref="fileVideoEl" controls loop playsinline class="video-element file-player" />
 
-            <AIOverlay v-if="p2pStore.myPeerId && aiStore.resultsMap[p2pStore.myPeerId]"
+            <AIOverlay v-if="p2pStore.myPeerId && aiStore.resultsMap[p2pStore.myPeerId] && shouldShowData(p2pStore.myPeerId)"
               :result="aiStore.resultsMap[p2pStore.myPeerId]" :filter-peer-id="p2pStore.myPeerId"
               :video-element="isFileMode ? fileVideoEl : localVideoEl" />
           </div>
@@ -128,7 +130,7 @@
           </div>
           <div class="video-wrapper">
             <video ref="remoteVideoEl" autoplay playsinline class="video-element" />
-            <AIOverlay v-if="p2pStore.targetPeerId && aiStore.resultsMap[p2pStore.targetPeerId]"
+            <AIOverlay v-if="p2pStore.targetPeerId && aiStore.resultsMap[p2pStore.targetPeerId] && shouldShowData(p2pStore.targetPeerId)"
               :result="aiStore.resultsMap[p2pStore.targetPeerId]" :filter-peer-id="p2pStore.targetPeerId"
               :video-element="remoteVideoEl" />
             <div v-if="!p2pStore.remoteStream" class="no-signal"><span>等待视频...</span></div>
@@ -326,6 +328,23 @@ const toggleRemoteAI = async () => {
       setTimeout(() => { remoteLoading.value = false; }, 500);
     } catch (e) { remoteLoading.value = false; ElMessage.error(e.message); }
   }
+};
+
+const shouldShowData = (peerId) => {
+  // 情况 1: 数据属于我自己
+  if (peerId === p2pStore.myPeerId) {
+    // 只有当我【正在推流】时才显示
+    // 这样一旦 stopStreaming() 执行，isSending 变 false，数据立马消失
+    return aiStore.isSending;
+  }
+  // 情况 2: 数据属于对方
+  if (peerId === p2pStore.targetPeerId) {
+    // 只有当我【有意图分析对方】时才显示
+    // 这样一旦我点击停止 (shouldAnalyzeRemote = false)，数据立马消失
+    // 哪怕 Map 里还有残留的幽灵数据，也会被这个条件拦截
+    return shouldAnalyzeRemote.value;
+  }
+  return false;
 };
 
 const handleJoinRoom = async () => { joining.value = true; try { await p2pStore.joinRoom(roomIdComputed.value, myPeerIdComputed.value); } finally { joining.value = false; } };

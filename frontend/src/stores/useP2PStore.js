@@ -325,7 +325,7 @@ export const useP2PStore = defineStore('p2p', () => {
                 return;
             }
 
-            if (data.type === 'control') {
+            if (signalType === 'control') {
                 const aiStore = useAIStore();
                 
                 if (data.action === 'start-ai') {
@@ -340,7 +340,10 @@ export const useP2PStore = defineStore('p2p', () => {
                 }
                 else if (data.action === 'stop-ai') {
                     ElMessage.info(`Peer ${fromPeer} 请求停止 AI 分析`);
-                    aiStore.stopAI();
+                    aiStore.stopStreaming();
+                    if (aiStore.resultsMap[myPeerId.value]) {
+                        delete aiStore.resultsMap[myPeerId.value];
+                    }
                 }
                 return; // Control 消息处理完毕
             }
