@@ -40,6 +40,14 @@
             <div class="stat-label">丢包率</div>
             <div class="stat-value">{{ p2pStore.stats.inbound.packetsLost }} <span class="unit">pkts</span></div>
           </div>
+
+          <div class="stat-card">
+            <div class="stat-label">AI启动耗时</div>
+            <div class="stat-value">
+              {{ aiStore.aiStartupTime > 0 ? aiStore.aiStartupTime.toFixed(0) : '-' }}
+              <span class="unit">ms</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -55,6 +63,13 @@
             </div>
 
             <div class="ai-metrics">
+              <el-tooltip content="AI 引擎冷启动耗时 (Warmup)" placement="top">
+                <span class="metric">
+                  启动: <strong>{{ aiStore.startupTimesMap[peerId] ? Math.round(aiStore.startupTimesMap[peerId]) : '-'
+                    }}ms</strong>
+                </span>
+              </el-tooltip>
+
               <el-tooltip content="服务器当前的处理帧率" placement="top">
                 <span class="metric">FPS: <strong>{{ result.fps || '-' }}</strong></span>
               </el-tooltip>
@@ -63,12 +78,18 @@
                 <span class="metric">推理: <strong>{{ result.inference_time }}ms</strong></span>
               </el-tooltip>
 
-              <el-tooltip content="总处理耗时 (Process = Decode + Infer + Encode)" placement="top">
-                <span class="metric">处理: <strong>{{ result.process_time }}ms</strong></span>
+              <el-tooltip content="系统处理延迟 (近似同步偏差)" placement="top">
+                <span class="metric" :style="{ color: result.d_an > 200 ? 'orange' : 'inherit' }">
+                  延迟: <strong>{{ result.d_an }}ms</strong>
+                </span>
               </el-tooltip>
 
               <el-tooltip content="从服务器发出到前端收到的网络延迟" placement="top">
-                <span class="metric">传输延迟: <strong>{{ calculateDelay(result.timestamp) }}ms</strong></span>
+                <span class="metric">传输延迟: <strong>{{ calculateDelay(result.send_time) }}ms</strong></span>
+              </el-tooltip>
+
+              <el-tooltip content="视频帧PTS (用于同步调试)" placement="top">
+                <span class="metric">PTS: <strong>{{ result.pts }}</strong></span>
               </el-tooltip>
 
               <span class="metric">对象: <strong>{{ result.objects ? result.objects.length : 0 }}</strong></span>
@@ -114,7 +135,8 @@
 
             <video v-show="isFileMode" ref="fileVideoEl" controls loop playsinline class="video-element file-player" />
 
-            <AIOverlay v-if="p2pStore.myPeerId && aiStore.resultsMap[p2pStore.myPeerId] && shouldShowData(p2pStore.myPeerId)"
+            <AIOverlay
+              v-if="p2pStore.myPeerId && aiStore.resultsMap[p2pStore.myPeerId] && shouldShowData(p2pStore.myPeerId)"
               :result="aiStore.resultsMap[p2pStore.myPeerId]" :filter-peer-id="p2pStore.myPeerId"
               :video-element="isFileMode ? fileVideoEl : localVideoEl" />
           </div>
@@ -130,7 +152,8 @@
           </div>
           <div class="video-wrapper">
             <video ref="remoteVideoEl" autoplay playsinline class="video-element" />
-            <AIOverlay v-if="p2pStore.targetPeerId && aiStore.resultsMap[p2pStore.targetPeerId] && shouldShowData(p2pStore.targetPeerId)"
+            <AIOverlay
+              v-if="p2pStore.targetPeerId && aiStore.resultsMap[p2pStore.targetPeerId] && shouldShowData(p2pStore.targetPeerId)"
               :result="aiStore.resultsMap[p2pStore.targetPeerId]" :filter-peer-id="p2pStore.targetPeerId"
               :video-element="remoteVideoEl" />
             <div v-if="!p2pStore.remoteStream" class="no-signal"><span>等待视频...</span></div>
@@ -185,12 +208,14 @@ const isRemoteAnalyzing = computed(() => {
 });
 
 // 延迟计算
-const calculateDelay = (timestamp) => {
-  if (!timestamp) return 0;
-  const now = Date.now() / 1000;
-  return Math.max(0, Math.round((now - timestamp) * 1000));
+const calculateDelay = (sendTime) => {
+  if (!sendTime) return 0;
+  // 现在 sendTime 是服务器的系统时间 (毫秒)
+  // 假设服务器和客户端都使用 NTP 同步，或者容忍少许时钟偏差
+  const now = Date.now();
+  const delay = now - sendTime;
+  return Math.max(0, delay); // 防止负数
 };
-
 // 视频流绑定
 watch(() => p2pStore.localStream, (s) => {
   // 只有在不是文件模式时，才把流赋给 localVideoEl (摄像头)
@@ -349,6 +374,18 @@ const shouldShowData = (peerId) => {
 
 const handleJoinRoom = async () => { joining.value = true; try { await p2pStore.joinRoom(roomIdComputed.value, myPeerIdComputed.value); } finally { joining.value = false; } };
 const handleStartCall = () => p2pStore.startCall(targetPeerIdComputed.value);
+
+
+
+// fnMap(todo) vue中p2p的计算同步偏差
+const calculateSyncDrift = (result) => {
+  // 这是一个非常高阶的科研指标
+  // 也就是：当前看到的画面时间 vs AI 标注的画面时间
+  // 需要前端能获取当前 video 正在播放的 RTP timestamp (需要 Chrome 实验性 API)
+  // 现阶段，我们先展示后端的纯处理耗时即可。
+  return "--";
+}
+
 </script>
 
 <style scoped>
@@ -517,6 +554,22 @@ const handleStartCall = () => p2pStore.startCall(targetPeerIdComputed.value);
   left: 50%;
   transform: translate(-50%, -50%);
   color: #909399;
+}
+
+.is-loading .stat-value {
+  font-size: 16px;
+  /* 加载时字号稍微小点 */
+}
+
+/* 如果你想给 loading 加个旋转动画，虽然 ElementPlus 的 icon 自带旋转 */
+@keyframes rotate {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 768px) {

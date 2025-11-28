@@ -6,6 +6,7 @@ import socketio
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
 from aiortc.mediastreams import MediaStreamError
 import time
+import json
 
 # 配置更详细的日志
 logger = logging.getLogger("AIHandler")
@@ -19,66 +20,95 @@ sid_room_map = {}
 # ICE Candidate 缓冲池
 ice_candidate_buffers: Dict[str, List[RTCIceCandidate]] = {}
 
+# backend/handlers/ai.py
+
 async def process_ai_track(track, sid, sio, ai_processor, room_id, peer_id):
-    """
-    后台任务：消费视频帧并运行 AI 推理
-    """
-    logger.info(f"[AI-Worker] Started processing track for SID:{sid} Peer:{peer_id}")
+    logger.info(f"[AI-Worker] Started processing track for SID:{sid}")
     
-    # [关键] 性能控制变量
+    # [核心修改 1] 计时起点：函数被调用意味着 WebRTC 链路已打通，数据开始流入
+    # 这时候相当于用户已经完成了 ICE 握手，开始等待 AI 响应
+    pipeline_start_time = time.time()
+    
+    # 1. 预热 (Warmup)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, ai_processor.warmup)
+    
+    # 2. 物理消除积压 (Flush)
+    dropped_frames = 0
+    if hasattr(track, "_queue"):
+        while track._queue.qsize() > 0:
+            try:
+                _ = track._queue.get_nowait()
+                dropped_frames += 1
+            except: break
+            
+    # [核心修改 2] 计算总耗时
+    # 这个时间涵盖了：模型加载 + CUDA初始化 + 冲掉积压数据的耗时
+    # 这就是"这7秒"里后端真正干活的时间
+    actual_startup_duration = (time.time() - pipeline_start_time) * 1000
+    
+    logger.info(f"[AI-Worker] Ready! Total Startup: {actual_startup_duration:.0f}ms | Flushed: {dropped_frames}")
+
+    # 3. 发送 Ready 信号 (直接把算好的时间发给前端)
+    target = room_id if room_id else sid
+    await sio.emit('ai_status', {
+        'status': 'ready',
+        'peerId': peer_id,
+        'startup_time': actual_startup_duration, # <--- 前端直接显示这个
+        'dropped_frames': dropped_frames         # (可选) 告诉前端丢了多少帧
+    }, room=target, namespace=AI_NAMESPACE)
+
+    # [Step 4] 进入主循环
     last_process_time = 0
-    min_interval = 0.05  # 限制 AI 最大处理帧率 (约 20 FPS)，防止 CPU 爆炸
-    
-    try:
-        while True:
-            try:
-                # 1. 获取帧 (这一步是实时的)
-                # aiortc 的 recv() 会尝试给下一帧。
-                # 如果我们处理慢了，aiortc 内部可能会积压。
-                frame = await track.recv()
-            except MediaStreamError:
-                logger.info(f"[AI-Worker] Track ended for {sid}")
-                break
+    min_interval = 0.05 
+    debug_last_print_time = 0
+
+    while True:
+        try:
+            frame = await track.recv()
+        except MediaStreamError:
+            logger.info(f"[AI-Worker] Track ended for {sid}")
+            break
+        
+        # 获取时间戳
+        pts = frame.pts 
+        time_base = frame.time_base
+        now = time.time()
+        
+        # 限流逻辑
+        if now - last_process_time < min_interval:
+            continue
+        last_process_time = now
+        
+        # 运行推理
+        try:
+            result = await loop.run_in_executor(
+                None, 
+                ai_processor.process, 
+                frame, 
+                pts,       
+                time_base 
+            )
             
-            # 2. [核心策略] 丢帧逻辑 (Drop Frames)
-            # 如果距离上次处理时间太短，直接丢弃，追赶实时画面
-            now = time.time()
-            if now - last_process_time < min_interval:
-                # 丢弃这一帧，不送进 AI，也不广播
-                continue
+            if result is None: continue
+
+            result['peerId'] = peer_id 
             
-            last_process_time = now
+            # 定期打印 Debug 信息 (每5秒)
+            now_ts = time.time()
+            if now_ts - debug_last_print_time > 5:
+                # 简单打印关键信息
+                print(f"\n[AI Debug] Peer:{peer_id} FPS:{result.get('fps')} Delay:{result.get('d_an')}ms Obj:{len(result.get('objects',[]))}")
+                debug_last_print_time = now_ts
             
-            # 3. 运行 AI 处理 (耗时操作)
-            # 这里的 process 是同步的，会阻塞这个协程，直到推理完成
-            # 这天然形成了一种“背压”：推理没完，就不会去 recv 下一帧
-            try:
-                # 这里的 frame 是 aiortc 的 VideoFrame 对象
-                # 我们将它转交给 ai_processor
+            # 广播结果
+            if room_id:
+                await sio.emit('ai_result', result, room=room_id, namespace=AI_NAMESPACE)
+            else:
+                await sio.emit('ai_result', result, room=sid, namespace=AI_NAMESPACE)
                 
-                # 在线程池中运行同步的 process 方法，避免阻塞整个 asyncio 循环
-                # 这是一个高级优化，防止 socket 心跳断连
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(None, ai_processor.process, frame)
-                
-                # 4. 注入身份信息
-                result['peerId'] = peer_id 
-                
-                # 5. 广播结果
-                if room_id:
-                    await sio.emit('ai_result', result, room=room_id, namespace=AI_NAMESPACE)
-                else:
-                    await sio.emit('ai_result', result, room=sid, namespace=AI_NAMESPACE)
-                    
-            except Exception as e:
-                logger.error(f"[AI-Worker] AI Inference Error: {e}")
-            
-    except asyncio.CancelledError:
-        logger.info(f"[AI-Worker] Processing task cancelled for {sid}")
-    except Exception as e:
-        logger.error(f"[AI-Worker] Critical error: {e}")
-    finally:
-        logger.info(f"[AI-Worker] Stopped processing track for {sid}")
+        except Exception as e:
+            logger.error(f"[AI-Worker] Inference Error: {e}")
 
 def register_ai_handlers(sio: socketio.AsyncServer, ai_processor):
     
@@ -219,3 +249,10 @@ def register_ai_handlers(sio: socketio.AsyncServer, ai_processor):
             
         except Exception as e:
             logger.error(f"[AI] Error handling candidate for {sid}: {e}")
+
+    @sio.event(namespace=AI_NAMESPACE)
+    async def update_config(sid, data):
+        """允许客户端动态调整 AI 参数"""
+        if hasattr(ai_processor, 'update_config'):
+            ai_processor.update_config(data)
+            await sio.emit('config_updated', data, room=sid)

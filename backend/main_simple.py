@@ -24,6 +24,9 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("WebRTCApp")
 
+logging.getLogger("aioice.ice").setLevel(logging.ERROR)
+logging.getLogger("aioice.stun").setLevel(logging.ERROR)
+
 # Setup App and Socket.IO
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 fastapi_app = FastAPI()

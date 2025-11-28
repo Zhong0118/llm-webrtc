@@ -1,9 +1,11 @@
 <template>
   <div class="simple-webrtc">
-    <h1>WebRTC Application (P2P + Server Push Viewer + Streamer Control)</h1>
+    <h1>WebRTC Application (P2P)</h1>
+
+    <WebRTCCore v-if="currentMode === 'p2p'" />
 
     <!-- 模式选择 -->
-    <el-radio-group v-model="currentMode" @change="handleModeChange" style="margin-bottom: 20px;">
+    <!-- <el-radio-group v-model="currentMode" @change="handleModeChange" style="margin-bottom: 20px;">
       <el-radio-button label="p2p">双人通话 (P2P)</el-radio-button>
       <el-radio-button label="serverPush">观看服务器直播</el-radio-button>
     </el-radio-group>
@@ -14,7 +16,7 @@
       <WebRTCCore v-if="currentMode === 'p2p'" />
       
       <ServerPushViewer v-if="currentMode === 'serverPush'" />
-    </div>
+    </div> -->
 
   </div>
 </template>

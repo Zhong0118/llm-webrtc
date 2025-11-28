@@ -52,6 +52,13 @@ def register_p2p_handlers(sio: socketio.AsyncServer):
         )
         current_room_sids = room_participants.get(room_id, set())
         other_sids = [p_sid for p_sid in current_room_sids if p_sid != sid]
+
+        # fnMap(todo) 后端p2p支持多人
+        # todo: 后续需要支持多对多，
+        # todo: 这意味着如果房间里有 A, B, C 三个人。
+        # todo: C 加入时，只能和 A（列表第一个）建立 P2P，无法发现 B。
+        # todo: 目前的逻辑是 1对1 (1v1) 的，无法满足“多人实时视频通信”的需求。 
+        # todo: 优化方案： 必须遍历所有 other_sids 并发送信号，建立 Full Mesh（全互联）网络。
         if len(other_sids) >= 1:
             other_target_sid = other_sids[0]
             other_peer_id = client_peer_map.get(other_target_sid, "unknown")
@@ -105,7 +112,7 @@ def register_p2p_handlers(sio: socketio.AsyncServer):
                     del room_participants[room_id]
             remaining_sids = room_participants.get(room_id, set())
             for other_sid in remaining_sids:
-                 await sio.emit("peer_left", {"peerId": peer_id}, room=other_sid, namespace=P2P_NAMESPACE)
+                await sio.emit("peer_left", {"peerId": peer_id}, room=other_sid, namespace=P2P_NAMESPACE)
             await sio.leave_room(sid, room_id, namespace=P2P_NAMESPACE)
             if sid in client_peer_map:
                 del client_peer_map[sid]

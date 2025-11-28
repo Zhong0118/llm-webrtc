@@ -6,6 +6,26 @@ import { ElMessage } from 'element-plus'
 const AI_NAMESPACE = '/ai_analysis'
 
 export const useAIStore = defineStore('ai', () => {
+  // 1. 定义配置网格 (Profile Grid)
+  const AI_PROFILES = {
+    LOW: {
+      maxBitrate: 200000,    // 200kbps
+      scaleResolutionDownBy: 4.0, // 比如 1080p -> 270p
+      maxFramerate: 10
+    },
+    MEDIUM: { // 推荐配置
+      maxBitrate: 500000,    // 500kbps
+      scaleResolutionDownBy: 2.0, // 比如 720p -> 360p
+      maxFramerate: 15
+    },
+    HIGH: {
+      maxBitrate: 1500000,   // 1.5Mbps
+      scaleResolutionDownBy: 1.0, // 原画
+      maxFramerate: 30
+    }
+  };
+
+
   const socketStore = useSocketStore()
   const aiSocket = ref(null)
   const pc = ref(null)
@@ -21,6 +41,13 @@ export const useAIStore = defineStore('ai', () => {
   let prevBytesSent = 0
   let prevTimestamp = 0
 
+  const isAIReady = ref(false)      // AI 是否初始化完成
+  const aiStartupTime = ref(0)      // 启动耗时 (ms)
+  const startupTimesMap = reactive({})
+  const pendingStartupMap = reactive({})
+  const focusedPeerId = ref(null)
+
+
   const ensureSocketConnected = async (socket) => {
     if (socket.connected) return
     try {
@@ -34,27 +61,93 @@ export const useAIStore = defineStore('ai', () => {
     }
   }
 
-  const setupResultListener = (socket) => {
+  const updateFocusedPeerStartup = (peerId) => {
+    if (!peerId) return
+    focusedPeerId.value = peerId
+    if (startupTimesMap[peerId]) {
+      aiStartupTime.value = startupTimesMap[peerId]
+      isAIReady.value = true
+    } else {
+      aiStartupTime.value = 0
+      isAIReady.value = false
+    }
+  }
+
+  const recordStartupDuration = (peerId, totalTime) => {
+    if (!peerId || totalTime <= 0) return
+    startupTimesMap[peerId] = totalTime
+    delete pendingStartupMap[peerId]
+    if (focusedPeerId.value === peerId) {
+      aiStartupTime.value = totalTime
+      isAIReady.value = true
+    }
+  }
+
+  // --- [新增] 通用监听器函数 ---
+  const setupCommonListeners = (socket) => {
+    socket.off('ai_status'); // 防止重复
+    socket.on('ai_status', (data) => {
+      if (data.status === 'ready') {
+        console.log(`[AI Store] Peer ${data.peerId} Ready!`);
+
+        const serverReportedTime = data.startup_time || 0;
+
+        if (data.peerId) {
+            startupTimesMap[data.peerId] = serverReportedTime;
+        }
+
+        // 更新状态
+        isAIReady.value = true;
+        aiStartupTime.value = serverReportedTime;
+
+        ElMessage.success(`AI 引擎就绪 (耗时: ${Math.round(serverReportedTime)}ms)`);
+      }
+    });
+
+    // 同时也监听结果，为了通用
     socket.off('ai_result');
     socket.on('ai_result', (data) => {
       if (data && data.peerId) {
         resultsMap[data.peerId] = data;
+
+        if (!startupTimesMap[data.peerId]) {
+          const startTS = pendingStartupMap[data.peerId]
+          let totalTime = startTS ? Date.now() - startTS : 0
+          if (!totalTime && data.send_time) {
+            totalTime = Date.now() - data.send_time
+          }
+
+          if (totalTime > 0) {
+            recordStartupDuration(data.peerId, totalTime)
+            ElMessage.success(`AI 首帧返回 (${data.peerId})：${Math.round(totalTime)}ms`)
+          }
+        }
       }
     });
   }
+
   const joinAIRoomOnly = async (roomId) => {
     if (!roomId) return
     aiSocket.value = socketStore.getSocket(AI_NAMESPACE)
     try {
       await ensureSocketConnected(aiSocket.value)
-      setupResultListener(aiSocket.value)
+      setupCommonListeners(aiSocket.value)
+
       aiSocket.value.emit('join', { roomId })
       isReceiving.value = true
     } catch (err) {
       console.error(err)
     }
   }
-  const connectAI = async (stream, roomId, myPeerId) => {
+
+
+  const connectAI = async (stream, roomId, myPeerId, profileName = 'MEDIUM') => {
+
+    isAIReady.value = false
+    aiStartupTime.value = 0
+    if (startupTimesMap[myPeerId]) delete startupTimesMap[myPeerId];
+
+
     if (isConnected.value) return
     if (!stream || !myPeerId) {
       ElMessage.warning('启动 AI 失败：缺少流或 PeerID')
@@ -71,7 +164,7 @@ export const useAIStore = defineStore('ai', () => {
 
     try {
       await ensureSocketConnected(aiSocket.value)
-      setupResultListener(aiSocket.value)
+      setupCommonListeners(aiSocket.value)
 
       aiSocket.value.emit('join', { roomId })
       isReceiving.value = true
@@ -104,9 +197,38 @@ export const useAIStore = defineStore('ai', () => {
         }
       }
 
-      stream.getTracks().forEach((track) => {
-        if (track.kind === 'video') pc.value.addTrack(track, stream)
-      })
+      for (const track of stream.getTracks()) {
+        if (track.kind === 'video') {
+          // A. 获取发送器 (Sender)
+          // pc.addTrack 返回的就是负责发这个流的 "发送器"
+          const sender = pc.value.addTrack(track, stream);
+
+          // B. 获取配置参数
+          const profile = AI_PROFILES[profileName] || AI_PROFILES.MEDIUM;
+          console.log(`[AI Store] 应用推流配置: ${profileName}`, profile);
+
+          // C. 修改发送参数
+          //这是 WebRTC 标准 API，用于控制编码器行为
+          const params = sender.getParameters();
+
+          if (!params.encodings) {
+            params.encodings = [{}];
+          }
+
+          // 设置核心限流参数
+          params.encodings[0].maxBitrate = profile.maxBitrate;
+          params.encodings[0].scaleResolutionDownBy = profile.scaleResolutionDownBy;
+          params.encodings[0].maxFramerate = profile.maxFramerate;
+
+          // D. 应用参数 (异步操作)
+          // 注意：这就限制了发给 AI 的那路流，完全不影响你本地观看或者 P2P 给其他人的画质
+          sender.setParameters(params).then(() => {
+            console.log("AI 推流参数设置成功");
+          }).catch(e => {
+            console.warn("设置 AI 编码参数失败 (可能是浏览器兼容性问题):", e);
+          });
+        }
+      }
 
       const offer = await pc.value.createOffer()
       await pc.value.setLocalDescription(offer)
@@ -154,8 +276,8 @@ export const useAIStore = defineStore('ai', () => {
 
   const stopStreaming = () => {
     if (statsTimer) {
-        clearInterval(statsTimer)
-        statsTimer = null
+      clearInterval(statsTimer)
+      statsTimer = null
     }
     if (pc.value) {
       pc.value.close()
@@ -168,18 +290,19 @@ export const useAIStore = defineStore('ai', () => {
     console.log("AI 推流已停止 (接收服务保持)");
   }
 
-// 【核心修复】彻底断开 (离开房间用)
+  // 【核心修复】彻底断开 (离开房间用)
   const disconnectAll = () => {
     stopStreaming() // 先停推流
-    
+
     // 再停接收
     for (const key in resultsMap) delete resultsMap[key];
     isReceiving.value = false
-    
+
     if (aiSocket.value) {
       aiSocket.value.off('ai_result')
       aiSocket.value.off('answer')
       aiSocket.value.off('candidate')
+      aiSocket.value.off('ai_status')
       // 不调用 socket.disconnect()，交给 SocketStore 管理复用
     }
     console.log("AI 服务完全断开");
@@ -189,6 +312,7 @@ export const useAIStore = defineStore('ai', () => {
 
   return {
     isConnected, isSending, isReceiving, resultsMap, netStats,
-    connectAI, joinAIRoomOnly, disconnectAll, stopStreaming
+    connectAI, joinAIRoomOnly, disconnectAll, stopStreaming,
+    isAIReady, aiStartupTime, startupTimesMap
   }
 })
