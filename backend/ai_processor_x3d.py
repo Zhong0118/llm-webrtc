@@ -1,18 +1,6 @@
 """
-AI Processor with X3D-S Model for Real-time Video Analysis
-===========================================================
-
 这个模块使用 X3D-S (Facebook AI) 进行视频动作识别，专门用于科研实验：
 测试不同 chunk_size 和 stride 对延迟的影响。
-
-X3D-S 优势：
-- 轻量级：6.0 GFLOPs (比 ResNet3D 少 5x)
-- 高精度：Kinetics-400 准确率 73.3%
-- 适合 RTX 4060：显存占用 < 2GB
-- 真正的 3D CNN：必须处理整个 chunk (C, T, H, W)
-
-作者: AI Toolkit Assistant
-日期: 2025-12-16
 """
 
 import time
@@ -23,6 +11,7 @@ from collections import deque
 from typing import Optional, Dict, Any, Tuple
 import numpy as np
 import cv2
+import random
 
 # 配置日志
 logging.basicConfig(
@@ -50,16 +39,12 @@ class AIProcessorX3D:
     """
     
     def __init__(self):
-        """
-        初始化 X3D-S 模型和缓冲区
-        
-        针对 RTX 4060 Laptop (8GB VRAM) 优化：
-        - 使用 X3D-S 而非 X3D-M（更轻量）
-        - 批次大小固定为 1
-        - 启用混合精度（FP16）加速
-        """
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        logger.info(f"🚀 初始化 AI Processor (设备: {self.device})")
+        if not torch.cuda.is_available():
+            logger.error("❌ 致命错误: 未检测到 NVIDIA GPU！请检查 CUDA 驱动或 PyTorch 版本。")
+            raise RuntimeError("CUDA not available")
+            
+        self.device = 'cuda'  # 强制指定，不再用 if-else
+        logger.info(f"1. 初始化 AI Processor (设备: {self.device})")
         
         # ============================================================
         # 1. 加载 X3D-S 模型
@@ -71,26 +56,31 @@ class AIProcessorX3D:
                 from pytorchvideo.models.hub import x3d_s
             except ImportError:
                 raise ImportError(
-                    "❌ 缺少 pytorchvideo 库！请安装：\n"
-                    "   pip install pytorchvideo\n"
-                    "   pip install opencv-python"
+                    "缺少 pytorchvideo 库！请安装：\n"
+                    "pip install pytorchvideo\n"
+                    "pip install opencv-python"
                 )
             
-            logger.info("📥 加载 X3D-S 模型（Kinetics-400 预训练权重）...")
+            logger.info("2. 加载 X3D-S 模型（Kinetics-400 预训练权重）...")
             
             # 加载预训练模型
             self.model = x3d_s(pretrained=True)
             self.model = self.model.to(self.device)
             self.model.eval()  # 设置为评估模式（关闭 Dropout/BatchNorm）
+
+            param_device = next(self.model.parameters()).device
+            logger.info(f"🔍 模型参数位于: {param_device}")
+            if param_device.type != 'cuda':
+                raise RuntimeError("模型未成功加载到 GPU！")
             
-            # X3D-S 的类别名称（Kinetics-400 数据集）
-            # 包含 'sign language interpretation' 等手势相关类别
+            # 加载 Kinetics-400 的类别名称
+            # 优先使用 torchvision 的官方元数据，网络不可用时也可离线工作
             self.class_names = self._load_kinetics_labels()
             
-            logger.info(f"✅ X3D-S 模型加载成功！支持 {len(self.class_names)} 个动作类别")
+            logger.info(f"3. X3D-S 模型加载成功！支持 {len(self.class_names)} 个动作类别")
             
         except Exception as e:
-            logger.error(f"❌ 模型加载失败: {e}")
+            logger.error(f"3. 模型加载失败: {e}")
             raise e
         
         # ============================================================
@@ -99,10 +89,14 @@ class AIProcessorX3D:
         self.config = {
             "chunk_size": 13,      # X3D-S 默认输入帧数（13帧）
             "stride": 1,           # 滑动窗口步长
+            "stride_mode": "frames",  # frames: 逐帧计数；pts: 按 PTS ticks 计步
             "resize_h": 182,       # X3D 输入高度（标准尺寸）
             "resize_w": 182,       # X3D 输入宽度
             "crop_size": 182,      # 中心裁剪尺寸（X3D 使用 182x182）
-            "simulate_delay": 0,   # 模拟额外延迟（毫秒）用于实验
+            # 服务器端“计算抖动/额外延迟”高斯分布参数（单位：毫秒）
+            # 实时默认应为 0；仅在压力测试时开启
+            "simulate_delay_mean_ms": 0.0,
+            "simulate_delay_std_ms": 0.0,
             "enable_fp16": True    # 启用 FP16 混合精度（RTX 4060 支持）
         }
         
@@ -123,7 +117,6 @@ class AIProcessorX3D:
         # ============================================================
         # 4. 归一化参数（Kinetics 数据集统计值）
         # ============================================================
-        # X3D 使用的标准归一化参数（与 ImageNet 稍有不同）
         self.mean = torch.tensor(
             [0.45, 0.45, 0.45],  # RGB 均值
             device=self.device
@@ -140,30 +133,63 @@ class AIProcessorX3D:
         self.frame_count = 0  # 处理的总帧数
         self.inference_count = 0  # 推理次数
         self.last_infer_time = 0  # 上次推理时间（用于计算 FPS）
+        # 滑动窗口与步进控制
+        self.frames_since_last_infer = 0  # 距离上次推理的帧计数
+        self.last_infer_pts: Optional[int] = None  # 上次推理锚点的 PTS
+        self.estimated_ticks_per_frame: Optional[float] = None  # 估计每帧 PTS 增量
         
-        logger.info("🎯 AI Processor 初始化完成！")
+        logger.info("4. AI Processor 初始化完成！")
     
     def _load_kinetics_labels(self) -> list:
         """
-        加载 Kinetics-400 数据集的类别标签
-        
+        加载 Kinetics-400 数据集的类别标签。
+
+        加载优先级：
+        1) 使用 torchvision 的官方元数据（离线可用）
+        2) 尝试下载官方 JSON 并缓存到本地（网络可用时）
+        3) 退化为占位标签 [class_0..class_399]
+
         Returns:
-            list: 400 个动作类别的名称列表
+            list: 400 个类别名称。
         """
-        # Kinetics-400 的标签（简化版，实际应从文件加载）
-        # 这里只列出部分常见类别
-        labels = [
-            "abseiling", "air drumming", "answering questions", "applauding",
-            "applying cream", "archery", "arm wrestling", "arranging flowers",
-            # ... (省略中间 392 个)
-            "sign language interpreting",  # 手语相关！
-            "singing", "sipping cup", "skateboarding",
-            # ... 
-            "zumba"
-        ]
-        # 实际应该有 400 个，这里简化处理
-        # 完整列表可从 pytorchvideo 官方仓库获取
-        return labels if len(labels) == 400 else [f"class_{i}" for i in range(400)]
+        # 1) 尝试从 torchvision 的权重元数据获取（无需网络）
+        try:
+            from torchvision.models.video import R3D_18_Weights
+            categories = list(R3D_18_Weights.DEFAULT.meta.get("categories", []))
+            if categories and len(categories) == 400:
+                return categories
+        except Exception:
+            pass
+
+        # 2) 尝试下载官方 JSON（若网络可用）并缓存
+        try:
+            import json
+            import os
+            from pathlib import Path
+            import urllib.request
+
+            cache_dir = Path(__file__).parent / "assets"
+            cache_dir.mkdir(exist_ok=True)
+            cache_file = cache_dir / "kinetics_classnames.json"
+
+            if not cache_file.exists():
+                url = (
+                    "https://raw.githubusercontent.com/pytorch/vision/main/"
+                    "torchvision/models/video/kinetics_classnames.json"
+                )
+                urllib.request.urlretrieve(url, str(cache_file))
+
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                categories = [data[str(i)] for i in range(400) if str(i) in data]
+                if len(categories) == 400:
+                    return categories
+        except Exception:
+            pass
+
+        # 3) 最后退化为占位标签
+        logger.warning("未能加载 Kinetics 类别名称，使用占位标签 class_i")
+        return [f"class_{i}" for i in range(400)]
     
     def warmup(self) -> bool:
         """
@@ -177,7 +203,7 @@ class AIProcessorX3D:
         Returns:
             bool: 预热是否成功
         """
-        logger.info(f"🔥 开始预热 X3D-S 模型（设备: {self.device}）...")
+        logger.info(f"开始预热 X3D-S 模型（设备: {self.device}）...")
         
         try:
             # 构造 dummy 输入：(Batch=1, C=3, T=13, H=182, W=182)
@@ -201,11 +227,11 @@ class AIProcessorX3D:
             if self.device == 'cuda':
                 torch.cuda.synchronize()
             
-            logger.info("✅ 预热完成！模型已就绪")
+            logger.info("预热完成！模型已就绪")
             return True
             
         except Exception as e:
-            logger.error(f"❌ 预热失败: {e}")
+            logger.error(f"预热失败: {e}")
             return False
     
     def update_config(self, new_config: Dict[str, Any]) -> None:
@@ -217,24 +243,96 @@ class AIProcessorX3D:
                 {
                     "chunk_size": 16,
                     "stride": 2,
-                    "simulate_delay": 50
+                    "simulate_delay_mean_ms": 10,
+                    "simulate_delay_std_ms": 5,
+                    "preset": "realtime" | "balanced" | "dense" | "stress" | "maxload"
                 }
         
         Note:
             更新配置后会清空缓冲区，避免混用不同配置的数据
         """
-        logger.info(f"🔄 更新配置: {new_config}")
+        logger.info(f"更新配置: {new_config}")
+
+        # 一键预设（若存在）
+        preset = new_config.get("preset")
+        if isinstance(preset, str):
+            self._apply_preset(preset.strip().lower())
         
         # 更新配置
         self.config.update(new_config)
+
+        # 向后兼容：如果传入旧字段 simulate_delay，则映射为均值，方差为 0
+        if "simulate_delay" in new_config and (
+            "simulate_delay_mean_ms" not in new_config and "simulate_delay_std_ms" not in new_config
+        ):
+            try:
+                delay_val = float(new_config["simulate_delay"]) or 0.0
+            except Exception:
+                delay_val = 0.0
+            self.config["simulate_delay_mean_ms"] = delay_val
+            self.config["simulate_delay_std_ms"] = 0.0
         
         # 重置缓冲区（避免旧数据污染）
         self.chunk_buffer.clear()
         self.pts_buffer.clear()
         self.timestamp_buffer.clear()
         
-        logger.info(f"📊 当前配置: chunk_size={self.config['chunk_size']}, "
+        logger.info(f"当前配置: chunk_size={self.config['chunk_size']}, "
                    f"stride={self.config['stride']}")
+
+    def _apply_preset(self, name: str) -> None:
+        """
+        应用配置预设。
+
+        预设说明：
+        - realtime: 追求最小可感知延迟（关闭计算抖动）
+        - balanced: 精度/频率平衡（默认推荐）
+        - dense: 高频反馈，牺牲端到端延迟
+        - stress: 保持 balanced 的窗口，并注入中等计算抖动
+        - maxload: 强烈计算抖动，做极限鲁棒性评估
+        """
+        if name == "realtime":
+            self.config.update({
+                "chunk_size": 13,
+                "stride": 13,
+                "stride_mode": "frames",
+                "simulate_delay_mean_ms": 0.0,
+                "simulate_delay_std_ms": 0.0,
+            })
+        elif name == "balanced":
+            self.config.update({
+                "chunk_size": 16,
+                "stride": 8,
+                "stride_mode": "frames",
+                "simulate_delay_mean_ms": 0.0,
+                "simulate_delay_std_ms": 0.0,
+            })
+        elif name == "dense":
+            self.config.update({
+                "chunk_size": 24,
+                "stride": 6,
+                "stride_mode": "frames",
+                "simulate_delay_mean_ms": 0.0,
+                "simulate_delay_std_ms": 0.0,
+            })
+        elif name == "stress":
+            self.config.update({
+                "chunk_size": 16,
+                "stride": 8,
+                "stride_mode": "frames",
+                "simulate_delay_mean_ms": 30.0,
+                "simulate_delay_std_ms": 10.0,
+            })
+        elif name == "maxload":
+            self.config.update({
+                "chunk_size": 16,
+                "stride": 8,
+                "stride_mode": "frames",
+                "simulate_delay_mean_ms": 50.0,
+                "simulate_delay_std_ms": 20.0,
+            })
+        else:
+            logger.warning(f"未知预设: {name}，已忽略")
     
     def _preprocess_frame(self, frame_obj) -> torch.Tensor:
         """
@@ -260,6 +358,13 @@ class AIProcessorX3D:
             # 1. 转为 RGB ndarray (H, W, C)
             img = frame_obj.to_ndarray(format="rgb24")
             
+            # ✅ 验证输入帧尺寸
+            if img.shape[0] < 10 or img.shape[1] < 10:
+                raise ValueError(
+                    f"输入帧尺寸异常: {img.shape[0]}x{img.shape[1]}, "
+                    f"可能是视频文件损坏或解码失败"
+                )
+            
             # 2. Resize（使用双线性插值）
             img_resized = cv2.resize(
                 img, 
@@ -282,10 +387,10 @@ class AIProcessorX3D:
             # 并归一化到 [0, 1]
             img_tensor = torch.from_numpy(img_cropped).permute(2, 0, 1).float() / 255.0
             
-            return img_tensor
+            return img_tensor.detach()
             
         except Exception as e:
-            logger.error(f"❌ 帧预处理失败: {e}")
+            logger.error(f"帧预处理失败: {e}")
             raise e
     
     def _check_circuit_breaker(self, pts: int) -> bool:
@@ -309,14 +414,11 @@ class AIProcessorX3D:
         # 计算 PTS 差值（90kHz 时钟下，45000 ≈ 0.5秒）
         pts_gap = pts - self.pts_buffer[-1]
         
-        # 阈值设置：根据帧率调整
-        # 假设 30fps，正常帧间隔 = 90000/30 = 3000 ticks
-        # 如果超过 5 帧的间隔（15000 ticks），认为异常
-        threshold = 15000
+        threshold = 30000
         
         if pts_gap > threshold:
             logger.warning(
-                f"⚠️ 检测到时间断层！PTS 跳跃 {pts_gap} ticks "
+                f"检测到时间断层！PTS 跳跃 {pts_gap} ticks "
                 f"(约 {pts_gap/90000:.2f}秒)，重置缓冲区"
             )
             return True
@@ -383,20 +485,46 @@ class AIProcessorX3D:
         self.pts_buffer.append(pts)
         self.timestamp_buffer.append(arrival_time)
         self.frame_count += 1
+        self.frames_since_last_infer += 1
+
+        # 更新每帧 PTS 增量估计值（用于 stride_mode='pts'）
+        if len(self.pts_buffer) >= 2:
+            delta = self.pts_buffer[-1] - self.pts_buffer[-2]
+            if delta > 0:
+                # 简单指数平滑，抗抖动
+                if self.estimated_ticks_per_frame is None:
+                    self.estimated_ticks_per_frame = float(delta)
+                else:
+                    self.estimated_ticks_per_frame = (
+                        0.8 * self.estimated_ticks_per_frame + 0.2 * float(delta)
+                    )
         
         # ============================================================
         # Step 4: 检查推理条件
         # ============================================================
         target_size = self.config['chunk_size']
         stride = self.config['stride']
+        stride_mode = self.config.get('stride_mode', 'frames')
         
         # 条件 1: 缓冲区必须填满
         if len(self.chunk_buffer) < target_size:
             return None
         
-        # 条件 2: 符合 stride 间隔（简化：每 stride 帧推理一次）
-        # 实际可以用更复杂的滑动窗口逻辑
-        if (self.frame_count % stride) != 0:
+        # 条件 2: 步进判断
+        # 更复杂、可控的滑动窗口逻辑：
+        # - frames 模式：距上次推理的帧数 >= stride
+        # - pts 模式：当前 PTS 与上次推理 PTS 的差 >= stride * estimated_ticks_per_frame
+        ready = False
+        if stride_mode == 'frames':
+            ready = self.frames_since_last_infer >= stride
+        elif stride_mode == 'pts' and self.last_infer_pts is not None and self.estimated_ticks_per_frame:
+            stride_ticks = stride * self.estimated_ticks_per_frame
+            ready = (pts - self.last_infer_pts) >= stride_ticks
+        else:
+            # 若未有基线，首次满足填满即可触发
+            ready = True
+
+        if not ready:
             return None
         
         # ============================================================
@@ -454,9 +582,12 @@ class AIProcessorX3D:
         # ============================================================
         # Step 7: 模拟额外延迟（用于实验）
         # ============================================================
-        simulate_delay = self.config.get('simulate_delay', 0)
-        if simulate_delay > 0:
-            time.sleep(simulate_delay / 1000.0)
+        mean_ms = float(self.config.get('simulate_delay_mean_ms', 0.0) or 0.0)
+        std_ms = float(self.config.get('simulate_delay_std_ms', 0.0) or 0.0)
+        if mean_ms > 0 or std_ms > 0:
+            # 使用高斯分布模拟“计算抖动”，避免负值
+            delay_ms = max(0.0, random.gauss(mean_ms, std_ms))
+            time.sleep(delay_ms / 1000.0)
         
         # ============================================================
         # Step 8: 计算延迟指标
@@ -478,6 +609,9 @@ class AIProcessorX3D:
         self.last_infer_time = infer_end
         
         self.inference_count += 1
+        # 推理完成，更新滑动窗口状态
+        self.frames_since_last_infer = 0
+        self.last_infer_pts = clip_pts[-1]
         
         # ============================================================
         # Step 9: 滑动窗口（清理缓冲区）
@@ -526,7 +660,7 @@ class AIProcessorX3D:
         # 定期打印日志（每 10 次推理）
         if self.inference_count % 10 == 0:
             logger.info(
-                f"📊 推理 #{self.inference_count} | "
+                f"推理 #{self.inference_count} | "
                 f"动作: {label[:20]} | "
                 f"置信度: {confidence:.2%} | "
                 f"延迟: {d_an:.1f}ms | "

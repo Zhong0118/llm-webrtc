@@ -11,8 +11,20 @@ from handlers.p2p import register_p2p_handlers
 from handlers.ai import register_ai_handlers
 from handlers.streamer import register_streamer_handlers, StreamerContext
 
-# Import Core Components
-from ai_processor import AIProcessor
+# Import Core Components (choose processor via env: AI_PROCESSOR=x3d|yolo)
+try:
+    from ai_processor_x3d import AIProcessorX3D  # 新版：X3D-S 视频识别
+    X3D_AVAILABLE = True
+except Exception:
+    AIProcessorX3D = None
+    X3D_AVAILABLE = False
+
+try:
+    from ai_processor import AIProcessor as YOLOProcessor  # 旧版：YOLO 单帧
+    YOLO_AVAILABLE = True
+except Exception:
+    YOLOProcessor = None
+    YOLO_AVAILABLE = False
 try:
     from streaming.streamer import RTSPStreamer
     VLC_AVAILABLE = True
@@ -41,7 +53,15 @@ fastapi_app.add_middleware(
 )
 
 # Initialize Components
-ai_processor = AIProcessor()
+processor_choice = os.getenv("AI_PROCESSOR", "x3d").lower()  # 默认使用 x3d
+if processor_choice == "x3d" and X3D_AVAILABLE:
+    logger.info("[AI] Using AIProcessorX3D (X3D-S)")
+    ai_processor = AIProcessorX3D()
+elif YOLO_AVAILABLE:
+    logger.info("[AI] Falling back to YOLO-based AIProcessor")
+    ai_processor = YOLOProcessor()
+else:
+    raise RuntimeError("No AI processor available: neither X3D nor YOLO could be imported.")
 
 if VLC_AVAILABLE:
     vlc_streamer = RTSPStreamer(sio_server=sio, namespace="/streamer")
@@ -71,6 +91,7 @@ async def server_info():
         "version": "2.0.0",
         "socketio_namespaces": ["/p2p", "/streamer", "/server_push", "/ai_analysis"],
         "vlc_available": VLC_AVAILABLE,
+        "ai_backend": "x3d" if isinstance(ai_processor, AIProcessorX3D) else "yolo",
     }
 
 if __name__ == "__main__":

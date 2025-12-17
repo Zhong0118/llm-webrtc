@@ -1,0 +1,29 @@
+======================================================================
+X3D-S EXPERIMENT SUMMARY REPORT
+======================================================================
+
+🏆 BEST CONFIGURATIONS:
+----------------------------------------------------------------------
+Lowest Visual Drift: RT chunk13-stride6
+  - Drift: 42.4 ms
+  - Config: chunk=13, stride=6
+
+Highest Throughput: RT chunk13-stride3
+  - Matches: 107
+  - Config: chunk=13, stride=3
+
+📊 STATISTICAL SUMMARY:
+----------------------------------------------------------------------
+Total Experiments: 24
+Average Visual Drift: 127.8 ms (±45.1)
+Average Server Delay (D_an): 1650.4 ms (±581.3)
+Average Inference Time: 124.3 ms (±34.3)
+
+🔍 KEY FINDINGS:
+----------------------------------------------------------------------
+1. Chunk Size vs Drift Correlation: 0.874
+   → Larger chunks lead to HIGHER drift
+2. Stride vs Throughput Correlation: -0.590
+   → Smaller stride leads to MORE AI results
+
+======================================================================

@@ -53,32 +53,59 @@ logging.getLogger("aiortc").setLevel(logging.WARNING)
 # ============================================================
 # 实验配置
 # ============================================================
-SERVER_URL = "https://localhost:33335"  
-VIDEO_FILE = "hand264.mp4"  # 确保这个文件存在
+import os
+from pathlib import Path
 
-# X3D-S 优化的实验配置（适配 13 帧的标准输入）
-EXPERIMENTS = [
-    # Baseline: 单帧处理（虽然 X3D 需要 13 帧，但 stride=13 模拟实时）
-    {"chunk_size": 13, "stride": 13, "desc": "1.X3D Realtime (13-13)"},
-    
-    # 短窗口：快速响应
-    {"chunk_size": 13, "stride": 6, "desc": "2.X3D Fast (13-6)"},
-    
-    # 中等窗口：平衡精度和延迟
-    {"chunk_size": 16, "stride": 8, "desc": "3.X3D Balanced (16-8)"},
-    {"chunk_size": 16, "stride": 4, "desc": "4.X3D Smooth (16-4)"},
-    
-    # 长窗口：高精度但高延迟
-    {"chunk_size": 24, "stride": 12, "desc": "5.X3D Accurate (24-12)"},
-    {"chunk_size": 24, "stride": 6, "desc": "6.X3D Dense (24-6)"},
-    
-    # 极端测试
-    {"chunk_size": 32, "stride": 16, "desc": "7.X3D Long Window (32-16)"},
-    {"chunk_size": 8, "stride": 4, "desc": "8.X3D Ultra Fast (8-4)"},
-]
+SERVER_URL = "https://localhost:33335"  
+# 使用绝对路径确保找到视频文件
+VIDEO_FILE = str(Path(__file__).parent / "part1_small.mp4")   
+
+# 网格化实验参数
+# 你可以修改下面两个列表来控制组合范围
+CHUNK_LIST = [13, 16, 24, 32]
+DEFAULT_STRIDE_MODE = "frames"  # 可改为 "pts"
+
+def _stride_candidates(chunk: int):
+    """给定 chunk，返回推荐的 stride 候选集合（去重/升序）"""
+    cands = {chunk, max(1, chunk // 2), max(1, chunk // 3)}
+    return sorted(cands)
+
+def build_experiments():
+    exps = []
+    for c in CHUNK_LIST:
+        for s in _stride_candidates(c):
+            # Realtime 档（无计算抖动）
+            exps.append({
+                "profile": "realtime",
+                "desc": f"RT chunk{c}-stride{s}",
+                "preset": "realtime",
+                "chunk_size": c,
+                "stride": s,
+                "stride_mode": DEFAULT_STRIDE_MODE,
+                "simulate_delay_mean_ms": 0.0,
+                "simulate_delay_std_ms": 0.0,
+            })
+            # Stress 档（30±10ms 计算抖动）
+            exps.append({
+                "profile": "stress",
+                "desc": f"ST chunk{c}-stride{s}",
+                "preset": "stress",
+                "chunk_size": c,
+                "stride": s,
+                "stride_mode": DEFAULT_STRIDE_MODE,
+                "simulate_delay_mean_ms": 30.0,
+                "simulate_delay_std_ms": 10.0,
+            })
+    return exps
+
+EXPERIMENTS = build_experiments()
 
 # 丢包率配置
 PACKET_LOSS_RATE = 0.10  # 10% 丢包率（模拟真实网络）
+# 可选：网络抖动（在接收端模拟不稳定到达）。
+# 建议使用小幅均值 + 波动，避免阻塞过长。
+JITTER_MEAN_MS = 20      # 平均抖动 20ms
+JITTER_STD_MS = 10       # 抖动标准差 10ms
 
 # 实验时长（秒）
 EXPERIMENT_DURATION = 30  # 每个配置运行 30 秒
@@ -101,13 +128,16 @@ class MetricsVideoSink(VideoStreamTrack):
         loss_rate: 丢包率（0.0 - 1.0）
     """
     
-    def __init__(self, track: VideoStreamTrack, loss_rate: float = 0.0):
+    def __init__(self, track: VideoStreamTrack, loss_rate: float = 0.0,
+                 jitter_mean_ms: float = 0.0, jitter_std_ms: float = 0.0):
         super().__init__()
         self.track = track
         self.received_data: List[Dict] = []
         self.loss_rate = loss_rate
         self.total_frames = 0  # 总接收帧数（含丢弃）
         self.dropped_frames = 0  # 丢弃的帧数
+        self.jitter_mean_ms = jitter_mean_ms
+        self.jitter_std_ms = jitter_std_ms
     
     async def recv(self):
         """
@@ -119,6 +149,13 @@ class MetricsVideoSink(VideoStreamTrack):
         frame = await self.track.recv()
         self.total_frames += 1
         
+        # 可选：在记录前模拟网络抖动（仅影响测量，不影响 WebRTC 渲染）
+        if self.jitter_mean_ms or self.jitter_std_ms:
+            # 采用正态分布抖动，避免负值
+            import math
+            delay_ms = max(0.0, random.gauss(self.jitter_mean_ms, self.jitter_std_ms))
+            await asyncio.sleep(delay_ms / 1000.0)  # 使用非阻塞休眠
+
         # 记录到达时间（在丢包判断之前，用于真实性）
         arrival_time = time.time()
         
@@ -295,7 +332,8 @@ class DualClientBenchmark:
                 }, namespace='/ai_analysis')
         
         # 添加视频轨道
-        self.player_ai = MediaPlayer(VIDEO_FILE)
+        self.player_ai = MediaPlayer(VIDEO_FILE, 
+            options={"stream_loop": "-1"})
         self.pc_a_to_ai.addTrack(self.player_ai.video)
         
         # 创建 Offer
@@ -347,12 +385,20 @@ class DualClientBenchmark:
             logger.info(f"📹 B 端收到视频轨道: {track.kind}")
             if track.kind == "video":
                 # 用 MetricsVideoSink 包装，记录帧数据
-                self.metrics_sink = MetricsVideoSink(track, loss_rate=PACKET_LOSS_RATE)
+                self.metrics_sink = MetricsVideoSink(
+                    track,
+                    loss_rate=PACKET_LOSS_RATE,
+                    jitter_mean_ms=JITTER_MEAN_MS,
+                    jitter_std_ms=JITTER_STD_MS
+                )
                 # 创建消费任务
                 asyncio.create_task(self.consume_track())
         
         # A 添加轨道
-        self.player_p2p = MediaPlayer(VIDEO_FILE)
+        self.player_p2p = MediaPlayer(
+            VIDEO_FILE, 
+            options={"stream_loop": "-1"}
+        )
         self.pc_a_p2p.addTrack(self.player_p2p.video)
         
         # A 创建 Offer
@@ -550,6 +596,10 @@ class DualClientBenchmark:
             "desc": config['desc'],
             "chunk_size": config['chunk_size'],
             "stride": config['stride'],
+            "stride_mode": config.get('stride_mode', 'frames'),
+            "profile": config.get('profile', 'custom'),
+            "simulate_mean_ms": config.get('simulate_delay_mean_ms', 0.0),
+            "simulate_std_ms": config.get('simulate_delay_std_ms', 0.0),
             "avg_drift": avg_drift,
             "std_drift": std_drift,
             "max_drift": max_drift,
@@ -594,7 +644,7 @@ class DualClientBenchmark:
                 traceback.print_exc()
         
         # 保存最终结果
-        output_file = f"x3d_experiment_results_{int(time.time())}.csv"
+        output_file = f"x3d_experiment_results_grid_{int(time.time())}.csv"
         self.results_df.to_csv(output_file, index=False)
         logger.info(f"\n✅ 所有实验完成！结果已保存到: {output_file}")
         

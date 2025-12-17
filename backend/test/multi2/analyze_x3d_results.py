@@ -84,7 +84,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     # 1. 提取简短标签（用于 X 轴）
     df['config_label'] = df['desc'].apply(
-        lambda x: x.split('.')[1].split('(')[0].strip()
+        lambda x: x.split('.')[1].split('(')[0].strip() if '.' in str(x) else str(x)
     )
     
     # 2. 添加组合标签（chunk-stride）

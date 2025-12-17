@@ -16,7 +16,7 @@ logging.getLogger("aioice").setLevel(logging.WARNING)
 logging.getLogger("aiortc").setLevel(logging.WARNING)
 
 SERVER_URL = "https://localhost:33335"  
-VIDEO_FILE = "hand264.mp4"         
+VIDEO_FILE = "part1.mp4"         
 EXPERIMENTS = [
     {"chunk_size": 1,  "stride": 1, "desc": "1.Baseline (Realtime)1-1"},
     {"chunk_size": 5,  "stride": 2, "desc": "2.Short Window5-2"},
